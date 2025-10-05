@@ -5,13 +5,27 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+// Payload types for raw_events
+export interface RawEventPayload {
+  type: 'text' | 'voice' | 'webhook';
+  content: string;
+  metadata?: Record<string, any>;
+}
+
 // Database types based on our schema
 export interface RawEvent {
   id: string;
-  payload: Record<string, any>;
+  payload: RawEventPayload;
   source: string;
   status: string;
   created_at: string;
+}
+
+// Insert type for creating new raw events
+export interface RawEventInsert {
+  payload: RawEventPayload;
+  source: string;
+  status?: string;
 }
 
 export interface Entity {
@@ -65,3 +79,52 @@ export interface Insight {
   status: string;
   created_at: string;
 }
+
+// Archivist Log API types
+export interface ArchivistLogEntry {
+  rawEvent: {
+    id: string;
+    payload: {
+      type: string;
+      content: string;
+      metadata?: Record<string, any>;
+    };
+    source: string;
+    status: string;
+    created_at: string;
+  };
+  createdEntities: Array<{
+    id: string;
+    title: string;
+    type: string;
+    summary: string;
+  }>;
+  createdEdges: Array<{
+    id: string;
+    fromEntity: {
+      id: string;
+      title: string;
+      type: string;
+    };
+    toEntity: {
+      id: string;
+      title: string;
+      type: string;
+    };
+    kind: string;
+  }>;
+  summary: {
+    chunkCount: number;
+    embeddingCount: number;
+    signalCount: number;
+  };
+  signals: Array<{
+    entity_id: string;
+    importance: number;
+    recency: number;
+    novelty: number;
+  }>;
+}
+
+// Export auth helpers
+export * from './auth';
