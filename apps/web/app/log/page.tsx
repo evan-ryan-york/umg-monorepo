@@ -1,4 +1,5 @@
 import { LogList } from '@/components/LogList';
+import { ResetButton } from '@/components/ResetButton';
 import type { ArchivistLogEntry } from '@repo/db';
 import { createClient } from '@supabase/supabase-js';
 import type { RawEvent } from '@repo/db';
@@ -40,38 +41,36 @@ export default async function ArchivistLogPage(): Promise<React.ReactElement> {
           const createdEntities = entities || [];
           const entityIds = createdEntities.map((e) => e.id);
 
-          // Fetch edges involving these entities
+          // Fetch edges created by this event (not all edges involving these entities)
           let createdEdges: ArchivistLogEntry['createdEdges'] = [];
-          if (entityIds.length > 0) {
-            const { data: edges } = await supabase
-              .from('edge')
-              .select('id, kind, from_id, to_id')
-              .or(`from_id.in.(${entityIds.join(',')}),to_id.in.(${entityIds.join(',')})`);
+          const { data: edges } = await supabase
+            .from('edge')
+            .select('id, kind, from_id, to_id')
+            .eq('source_event_id', event.id);
 
-            if (edges) {
-              createdEdges = await Promise.all(
-                edges.map(async (edge) => {
-                  const { data: fromEntity } = await supabase
-                    .from('entity')
-                    .select('id, title, type')
-                    .eq('id', edge.from_id)
-                    .single();
+          if (edges) {
+            createdEdges = await Promise.all(
+              edges.map(async (edge) => {
+                const { data: fromEntity } = await supabase
+                  .from('entity')
+                  .select('id, title, type')
+                  .eq('id', edge.from_id)
+                  .single();
 
-                  const { data: toEntity } = await supabase
-                    .from('entity')
-                    .select('id, title, type')
-                    .eq('id', edge.to_id)
-                    .single();
+                const { data: toEntity } = await supabase
+                  .from('entity')
+                  .select('id, title, type')
+                  .eq('id', edge.to_id)
+                  .single();
 
-                  return {
-                    id: edge.id,
-                    fromEntity: fromEntity || { id: edge.from_id, title: 'Unknown', type: 'unknown' },
-                    toEntity: toEntity || { id: edge.to_id, title: 'Unknown', type: 'unknown' },
-                    kind: edge.kind,
-                  };
-                })
-              );
-            }
+                return {
+                  id: edge.id,
+                  fromEntity: fromEntity || { id: edge.from_id, title: 'Unknown', type: 'unknown' },
+                  toEntity: toEntity || { id: edge.to_id, title: 'Unknown', type: 'unknown' },
+                  kind: edge.kind,
+                };
+              })
+            );
           }
 
           // Fetch signals for these entities
@@ -144,7 +143,48 @@ export default async function ArchivistLogPage(): Promise<React.ReactElement> {
 
   return (
     <div className="container mx-auto py-8 px-4">
-      <h1 className="text-3xl font-bold mb-6">Archivist Activity Log</h1>
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold">Archivist Activity Log</h1>
+        <ResetButton />
+      </div>
+
+      {/* Explanation Panel */}
+      <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h2 className="font-semibold text-blue-900 mb-2">📖 How to Read This Log</h2>
+        <div className="text-sm text-blue-800 space-y-2">
+          <p>
+            <strong>Raw Event:</strong> The original text you submitted through Quick Capture.
+          </p>
+          <p>
+            <strong>Entities:</strong> Important things the AI extracted (people, projects, features, decisions, etc.).
+            Hub entities (🚀 projects, 🎯 decisions) are central concepts that other notes connect to.
+          </p>
+          <p>
+            <strong>Relationships:</strong> How entities connect to each other. For example, a meeting note might &ldquo;relate to&rdquo; a project.
+          </p>
+          <p>
+            <strong>Signals:</strong> Scoring metrics that help surface relevant memories later:
+          </p>
+          <ul className="ml-6 space-y-1 text-xs">
+            <li>
+              <strong>Importance (0-1):</strong> How central this entity is in your knowledge graph. Hub entities get higher scores.
+            </li>
+            <li>
+              <strong>Recency (0-1):</strong> How recently this was created. Newer items score higher, older items decay over time.
+            </li>
+            <li>
+              <strong>Novelty (0-1):</strong> How new or unique this is. Entities with fewer connections are more novel.
+            </li>
+          </ul>
+          <p>
+            <strong>Chunks:</strong> The text is split into smaller pieces for efficient searching and retrieval.
+          </p>
+          <p>
+            <strong>Embeddings:</strong> Vector representations of text chunks (currently disabled - placeholder values only).
+          </p>
+        </div>
+      </div>
+
       {error ? (
         <div className="text-red-600 bg-red-50 border border-red-200 rounded p-4">
           {error}

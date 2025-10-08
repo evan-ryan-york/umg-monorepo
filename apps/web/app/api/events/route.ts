@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { RawEventInsert } from '@repo/db';
 
 export async function POST(request: Request) {
@@ -39,12 +40,18 @@ export async function POST(request: Request) {
       );
     }
 
+    // Get or create user entity
+    // Note: This might be null on first event - Archivist will create it during processing
+    const userEntityId = await getUserEntityId(supabase);
+
     // Prepare the event data
     const eventData: RawEventInsert = {
       payload: {
         type: 'text',
         content: content.trim(),
         metadata: {},
+        user_id: 'default_user', // Will be from auth when implemented
+        user_entity_id: userEntityId || undefined, // Allow null for first event
       },
       source: source || 'quick_capture',
       status: 'pending_processing', // Manual entries skip triage
@@ -76,5 +83,55 @@ export async function POST(request: Request) {
       { success: false, error: 'Internal server error' },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * Get or create the user entity for the current user
+ * Returns the entity ID, or null if unable to find/create
+ */
+async function getUserEntityId(supabase: SupabaseClient): Promise<string | null> {
+  console.log('\n🔍 [DEBUG] getUserEntityId() called');
+
+  try {
+    // Look for Ryan York's person entity
+    console.log('🔍 [DEBUG] Querying for person entities with "Ryan York" in title...');
+    const { data: existingEntities, error: queryError } = await supabase
+      .from('entity')
+      .select('id, title, type, metadata')
+      .eq('type', 'person')
+      .ilike('title', '%Ryan York%'); // Find entity with "Ryan York" in title
+
+    if (queryError) {
+      console.error('❌ [DEBUG] Error querying for Ryan York entity:', queryError);
+      return null;
+    }
+
+    console.log(`🔍 [DEBUG] Query returned ${existingEntities?.length || 0} entities`);
+    if (existingEntities && existingEntities.length > 0) {
+      existingEntities.forEach((entity, index) => {
+        console.log(`🔍 [DEBUG] Entity ${index + 1}:`, {
+          id: entity.id,
+          title: entity.title,
+          type: entity.type,
+          metadata: entity.metadata,
+        });
+      });
+
+      const firstEntity = existingEntities[0];
+      if (firstEntity) {
+        console.log(`✅ [DEBUG] Found Ryan York entity: ${firstEntity.id} (${firstEntity.title})`);
+        console.log(`✅ [DEBUG] Metadata:`, firstEntity.metadata);
+        return firstEntity.id;
+      }
+    }
+
+    // Ryan York entity doesn't exist yet
+    // DON'T create it here - let the Archivist create it on first introduction
+    console.log(`⚠️  [DEBUG] No Ryan York entity found - will be created by Archivist on self-introduction`);
+    return null;
+  } catch (error) {
+    console.error('❌ [DEBUG] Exception in getUserEntityId:', error);
+    return null;
   }
 }

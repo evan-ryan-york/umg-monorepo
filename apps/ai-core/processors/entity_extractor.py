@@ -38,6 +38,12 @@ class EntityExtractor:
 - A brief summary (1 sentence)
 - Whether it's the primary subject (is_primary_subject: true/false)
 
+IMPORTANT RULES:
+1. DO NOT extract pronouns (I, me, my, you, we, etc.) as entities
+2. Only extract actual names, titles, and concrete things
+3. If someone says "My name is X", extract "X" as the primary subject (is_primary_subject: true)
+4. If someone says "I am starting Company Y", extract "Company Y" but NOT "I"
+
 Text: {text}
 
 Return ONLY a valid JSON object (no markdown, no explanation) in this exact format:

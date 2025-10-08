@@ -7,6 +7,8 @@ class RawEventPayload(BaseModel):
     type: str  # 'text', 'voice', 'webhook'
     content: str
     metadata: Dict[str, Any] = {}
+    user_id: Optional[str] = None  # User identifier (from auth)
+    user_entity_id: Optional[str] = None  # Link to person entity in knowledge graph
 
 
 class RawEvent(BaseModel):

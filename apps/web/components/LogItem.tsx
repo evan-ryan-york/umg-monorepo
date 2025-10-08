@@ -60,10 +60,25 @@ export function LogItem({ log }: LogItemProps): React.ReactElement {
                           </div>
                         )}
                         {entitySignal && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            → Signals: I={entitySignal.importance.toFixed(2)}, R=
-                            {entitySignal.recency.toFixed(2)}, N=
-                            {entitySignal.novelty.toFixed(2)}
+                          <div className="text-xs text-gray-500 mt-1 space-y-0.5">
+                            <div>
+                              → <span className="font-semibold">Importance</span> (I): {entitySignal.importance.toFixed(2)}{' '}
+                              <span className="text-gray-400">
+                                (how central this is - higher for hub entities like projects)
+                              </span>
+                            </div>
+                            <div>
+                              → <span className="font-semibold">Recency</span> (R): {entitySignal.recency.toFixed(2)}{' '}
+                              <span className="text-gray-400">
+                                (how recently created - decays over time)
+                              </span>
+                            </div>
+                            <div>
+                              → <span className="font-semibold">Novelty</span> (N): {entitySignal.novelty.toFixed(2)}{' '}
+                              <span className="text-gray-400">
+                                (how new this is - based on connection count)
+                              </span>
+                            </div>
                           </div>
                         )}
                       </div>

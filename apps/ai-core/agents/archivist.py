@@ -5,6 +5,7 @@ from processors.entity_extractor import EntityExtractor
 from processors.mention_tracker import MentionTracker
 from processors.relationship_mapper import RelationshipMapper
 from services.embeddings import EmbeddingsService
+from services.entity_resolver import EntityResolver
 from processors.signal_scorer import SignalScorer
 from typing import List, Dict
 from datetime import datetime
@@ -26,6 +27,7 @@ class Archivist:
         self.mention_tracker = MentionTracker()
         self.relationship_mapper = RelationshipMapper()
         self.embeddings_service = EmbeddingsService()
+        self.entity_resolver = EntityResolver()
         self.signal_scorer = SignalScorer()
 
         logger.info("Archivist initialized with all processors")
@@ -72,11 +74,26 @@ class Archivist:
             # Step 3: Entity Extraction
             extracted_entities = self.entity_extractor.extract_entities(cleaned_text)
             logger.info(f"Extracted {len(extracted_entities)} entities")
+            logger.info(f"🔍 [DEBUG] Extracted entities: {[{'title': e.get('title'), 'type': e.get('type'), 'is_primary': e.get('is_primary_subject')} for e in extracted_entities]}")
+
+            # Step 3.5: Entity Resolution (NEW - Phase 1)
+            # Resolve pronouns and references to existing entities
+            user_entity_id = event.payload.user_entity_id
+            reference_map = self.entity_resolver.resolve_references(
+                cleaned_text,
+                user_entity_id
+            )
+
+            # Fetch recent entities for cross-event relationship detection
+            existing_entities = self.db.get_recent_entities(limit=20)
+            logger.info(f"Fetched {len(existing_entities)} recent entities for resolution")
+            logger.info(f"Resolved {len(reference_map)} references: {reference_map}")
 
             # Step 4: Mention Tracking & Entity Promotion
             entity_ids = []
             hub_entity_id = None
             entity_map = {}  # Map of entity titles to IDs
+            user_person_entity_id = None  # Track if we create a person entity for the user
 
             for entity_data in extracted_entities:
                 entity_title = entity_data.get('title', '')
@@ -93,13 +110,23 @@ class Archivist:
 
                 # Check if should promote
                 if self.mention_tracker.should_promote(entity_title, is_primary):
-                    # Check if already exists
+                    # Check if already exists (mention tracker first, then database)
                     existing_id = self.mention_tracker.get_existing_entity_id(entity_title)
+
+                    if not existing_id:
+                        # Check database for existing entity
+                        logger.info(f"🔍 [DEBUG] Checking database for entity '{entity_title}' (type: {entity_type})")
+                        existing_entity = self.db.get_entity_by_title(entity_title, entity_type)
+                        if existing_entity:
+                            existing_id = existing_entity.id
+                            logger.info(f"✅ [DEBUG] Found existing entity in database: {existing_id[:8]}...")
+                            # Update mention tracker so we don't query again
+                            self.mention_tracker.mark_promoted(entity_title, existing_id)
 
                     if existing_id:
                         entity_ids.append(existing_id)
                         entity_map[entity_title] = existing_id
-                        logger.debug(f"Entity '{entity_title}' already exists: {existing_id}")
+                        logger.info(f"✅ [DEBUG] Using existing entity '{entity_title}': {existing_id[:8]}...")
                     else:
                         # Determine if this should be a hub entity
                         is_hub = entity_type in ['project', 'feature', 'decision']
@@ -112,19 +139,94 @@ class Archivist:
                             'metadata': entity_data.get('metadata', {}),
                         }
 
-                        if is_hub:
-                            entity_id = self.db.create_hub_entity(entity_payload)
-                            hub_entity_id = entity_id
-                            logger.info(f"Created hub entity '{entity_title}': {entity_id}")
-                        else:
-                            entity_id = self.db.create_entity(entity_payload)
-                            logger.info(f"Created entity '{entity_title}': {entity_id}")
+                        try:
+                            if is_hub:
+                                entity_id = self.db.create_hub_entity(entity_payload)
+                                hub_entity_id = entity_id
+                                logger.info(f"Created hub entity '{entity_title}': {entity_id}")
+                            else:
+                                entity_id = self.db.create_entity(entity_payload)
+                                logger.info(f"Created entity '{entity_title}': {entity_id}")
 
-                        self.mention_tracker.mark_promoted(entity_title, entity_id)
-                        entity_ids.append(entity_id)
-                        entity_map[entity_title] = entity_id
+                            # If this is a person entity and is primary subject, it might be the user introducing themselves
+                            logger.info(f"🔍 [DEBUG] Checking for self-introduction: type={entity_type}, is_primary={is_primary}, user_entity_id={user_entity_id}")
+                            if entity_type == 'person' and is_primary:
+                                # THIS is the user introducing themselves!
+                                user_person_entity_id = entity_id
+                                logger.info(f"✅ [DEBUG] Detected self-introduction: '{entity_title}' is the user (entity_id: {entity_id[:8]}...)")
+
+                            self.mention_tracker.mark_promoted(entity_title, entity_id)
+                            entity_ids.append(entity_id)
+                            entity_map[entity_title] = entity_id
+                        except Exception as e:
+                            logger.error(f"Failed to create entity '{entity_title}': {e}")
+                            # Don't add to entity_ids if creation failed
                 else:
                     logger.debug(f"Entity '{entity_title}' not promoted yet (mention count too low)")
+
+            # Step 4.5: Link user entity to person entity if this is a self-introduction
+            logger.info(f"\n🔍 [DEBUG] Step 4.5 - Self-introduction detection")
+            logger.info(f"🔍 [DEBUG] user_person_entity_id: {user_person_entity_id}")
+            logger.info(f"🔍 [DEBUG] user_entity_id from payload: {user_entity_id}")
+
+            if user_person_entity_id:
+                logger.info(f"✅ [DEBUG] Detected person entity creation: {user_person_entity_id[:8]}...")
+                try:
+                    if not user_entity_id:
+                        # This is the FIRST event - user introduced themselves
+                        # Use the person entity as the user entity directly
+                        logger.info(f"✅ [DEBUG] FIRST EVENT: Using person entity {user_person_entity_id[:8]}... as user entity")
+                        user_entity_id = user_person_entity_id
+
+                        # Update person entity metadata to mark it as the user
+                        person_entity = self.db.get_entity_by_id(user_person_entity_id)
+                        if person_entity:
+                            logger.info(f"✅ [DEBUG] Marking person entity as user (is_user_entity: true)")
+                            self.db.update_entity_metadata(user_person_entity_id, {
+                                **person_entity.metadata,
+                                'user_id': 'default_user',
+                                'is_user_entity': True
+                            })
+                            logger.info(f"✅ [DEBUG] Updated metadata for {user_person_entity_id[:8]}...")
+                        else:
+                            logger.error(f"❌ [DEBUG] Could not fetch person entity {user_person_entity_id[:8]}...")
+
+
+                    elif user_person_entity_id != user_entity_id:
+                        # User entity exists but they created a new person entity
+                        # Merge the generic user entity with the real person entity
+                        user_entity = self.db.get_entity_by_id(user_entity_id)
+
+                        if user_entity and user_entity.metadata.get('is_system_user'):
+                            # This is the auto-created generic user entity
+                            # Update reference_map to point to the real person entity instead
+                            logger.info(f"Merging user entity {user_entity_id[:8]} with person entity {user_person_entity_id[:8]}")
+
+                            # Update reference_map so "I" points to the real person entity
+                            for ref_key in list(reference_map.keys()):
+                                if reference_map[ref_key] == user_entity_id:
+                                    reference_map[ref_key] = user_person_entity_id
+                                    logger.info(f"Updated reference '{ref_key}' to point to {user_person_entity_id[:8]}")
+
+                            # Mark the generic user entity for future cleanup (add to metadata)
+                            # In production, you might want to actually merge/delete the generic entity
+                            self.db.update_entity_metadata(user_entity_id, {
+                                **user_entity.metadata,
+                                'merged_into': user_person_entity_id,
+                                'is_deprecated': True
+                            })
+
+                            # Update person entity to mark as user
+                            person_entity = self.db.get_entity_by_id(user_person_entity_id)
+                            if person_entity:
+                                self.db.update_entity_metadata(user_person_entity_id, {
+                                    **person_entity.metadata,
+                                    'user_id': 'default_user',
+                                    'is_user_entity': True
+                                })
+
+                except Exception as e:
+                    logger.error(f"Error linking user entity to person entity: {e}")
 
             # Step 5: Create spoke entity if hub exists
             if hub_entity_id and event.source in ['quick_capture', 'voice_debrief', 'webhook_granola']:
@@ -139,22 +241,30 @@ class Archivist:
                     'metadata': {'is_spoke': True, 'hub_id': hub_entity_id}
                 }
 
-                spoke_id = self.db.create_spoke_entity(hub_entity_id, spoke_payload)
+                spoke_id = self.db.create_spoke_entity(hub_entity_id, spoke_payload, source_event_id=event_id)
                 entity_ids.append(spoke_id)
                 logger.info(f"Created spoke entity {spoke_id} linked to hub {hub_entity_id}")
 
-            # Step 6: Relationship Mapping
+            # Step 6: Relationship Mapping (UPDATED - now includes existing entities and reference map)
             relationships = self.relationship_mapper.detect_relationships(
                 cleaned_text,
-                extracted_entities
+                extracted_entities,
+                existing_entities=existing_entities,
+                reference_map=reference_map
             )
+
+            # Build complete entity_map including both new and existing entities
+            complete_entity_map = dict(entity_map)  # Start with newly created entities
+            for existing_entity in existing_entities:
+                complete_entity_map[existing_entity['title']] = existing_entity['id']
 
             edges_created = 0
             for rel in relationships:
                 success = self.relationship_mapper.create_edge_from_relationship(
                     rel,
-                    entity_map,
-                    self.db
+                    complete_entity_map,
+                    self.db,
+                    source_event_id=event_id  # Track which event created this edge
                 )
                 if success:
                     edges_created += 1
@@ -191,6 +301,7 @@ class Archivist:
                 embeddings = self.embeddings_service.generate_embeddings_batch(chunk_texts)
 
                 # Step 9b: Store Chunks & Embeddings
+                chunks_created = 0
                 for i, chunk in enumerate(chunks):
                     # Associate with first entity (only create chunks if entities exist)
                     if not entity_ids:
@@ -198,25 +309,31 @@ class Archivist:
                         continue
 
                     primary_entity_id = entity_ids[0]
+                    logger.info(f"🔍 [DEBUG] Creating chunk for entity {primary_entity_id[:8]}...")
 
-                    chunk_payload = {
-                        'entity_id': primary_entity_id,
-                        'text': chunk['text'],
-                        'token_count': chunk['token_count'],
-                        'hash': chunk['hash']
-                    }
+                    try:
+                        chunk_payload = {
+                            'entity_id': primary_entity_id,
+                            'text': chunk['text'],
+                            'token_count': chunk['token_count'],
+                            'hash': chunk['hash']
+                        }
 
-                    chunk_id = self.db.create_chunk(chunk_payload)
+                        chunk_id = self.db.create_chunk(chunk_payload)
 
-                    embedding_payload = {
-                        'chunk_id': chunk_id,
-                        'vec': embeddings[i],
-                        'model': 'text-embedding-3-small'
-                    }
+                        embedding_payload = {
+                            'chunk_id': chunk_id,
+                            'vec': embeddings[i],
+                            'model': 'text-embedding-3-small'
+                        }
 
-                    self.db.create_embedding(embedding_payload)
+                        self.db.create_embedding(embedding_payload)
+                        chunks_created += 1
+                    except Exception as e:
+                        logger.error(f"❌ [DEBUG] Failed to create chunk for entity {primary_entity_id[:8]}...: {e}")
+                        # Continue with next chunk instead of failing the entire event
 
-                logger.info(f"Stored {len(chunks)} chunks and embeddings")
+                logger.info(f"Stored {chunks_created}/{len(chunks)} chunks and embeddings")
 
             # Step 10: Signal Assignment
             for entity_id in entity_ids:

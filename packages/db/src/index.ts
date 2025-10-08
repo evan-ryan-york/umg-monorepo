@@ -10,6 +10,8 @@ export interface RawEventPayload {
   type: 'text' | 'voice' | 'webhook';
   content: string;
   metadata?: Record<string, any>;
+  user_id?: string;
+  user_entity_id?: string;
 }
 
 // Database types based on our schema

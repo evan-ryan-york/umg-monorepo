@@ -18,14 +18,16 @@ class RelationshipMapper:
         self,
         text: str,
         entities: List[Dict],
-        existing_entities: List[Dict] = []
+        existing_entities: List[Dict] = [],
+        reference_map: Dict[str, str] = {}
     ) -> List[Dict]:
-        """Detect relationships between entities using GPT-4
+        """Detect relationships between entities using Claude
 
         Args:
             text: The source text containing the entities
             entities: List of extracted entities with 'title' and 'type' fields
             existing_entities: Optional list of existing entities from the graph
+            reference_map: Mapping of references (pronouns) to entity IDs
 
         Returns:
             List of relationship dictionaries with:
@@ -34,25 +36,44 @@ class RelationshipMapper:
                 - relationship_type: Type of edge (belongs_to, modifies, etc.)
                 - metadata: Additional context
         """
-        if not entities or len(entities) < 2:
+        # Combine new and existing entities for full context
+        all_entities = entities + existing_entities
+
+        # Need at least 2 entities total OR have reference_map (pronoun references)
+        if len(all_entities) < 2 and not reference_map:
             logger.debug("Not enough entities to detect relationships")
             return []
 
         try:
-            # Build entity list for LLM
-            entity_list = [f"{e['title']} ({e['type']})" for e in entities]
+            # Build entity list for LLM with reference hints
+            entity_list = []
+            for e in all_entities:
+                entity_str = f"{e['title']} ({e['type']})"
 
-            prompt = f"""Given this text and list of entities, identify relationships between them.
+                # Add reference hints if this entity is referenced by pronouns
+                entity_id = e.get('id', e.get('entity_id'))
+                matching_refs = [
+                    ref for ref, ref_entity_id in reference_map.items()
+                    if ref_entity_id == entity_id
+                ]
+                if matching_refs:
+                    entity_str += f" [also referred to as: {', '.join(matching_refs)}]"
+
+                entity_list.append(entity_str)
+
+            prompt = f"""Given this text and list of entities (including existing ones from the knowledge graph), identify relationships between them.
 
 Text: {text}
 
-Entities:
+Entities (new + existing from knowledge graph):
 {chr(10).join(entity_list)}
+
+IMPORTANT: Pay attention to pronouns like "I", "me", "my" which may refer to existing entities. These are shown in [also referred to as: ...] hints.
 
 For each relationship, specify:
 - from_entity: The source entity title (must match exactly from the list above)
 - to_entity: The destination entity title (must match exactly from the list above)
-- relationship_type: One of [belongs_to, modifies, mentions, informs, blocks, contradicts, relates_to]
+- relationship_type: One of [belongs_to, modifies, mentions, informs, blocks, contradicts, relates_to, founded, works_at, manages, owns, contributes_to]
 - metadata: Any relevant context as a JSON object
 
 Relationship type meanings:
@@ -63,6 +84,11 @@ Relationship type meanings:
 - blocks: Dependencies (e.g., Task blocks another Task)
 - contradicts: Tensions (e.g., Decision contradicts previous Strategy)
 - relates_to: General connection (e.g., Spoke relates_to Hub)
+- founded: Person founded/started a company or project
+- works_at: Person works at a company
+- manages: Person manages a project or team
+- owns: Person/entity owns or is responsible for something
+- contributes_to: Person contributes to a project
 
 Return ONLY a JSON object with a "relationships" array:
 {{
@@ -70,7 +96,7 @@ Return ONLY a JSON object with a "relationships" array:
     {{
       "from_entity": "entity name",
       "to_entity": "entity name",
-      "relationship_type": "belongs_to",
+      "relationship_type": "founded",
       "metadata": {{"context": "additional info"}}
     }}
   ]
@@ -242,7 +268,8 @@ If no relationships exist, return {{"relationships": []}}"""
         self,
         relationship: Dict,
         entity_map: Dict[str, str],
-        db
+        db,
+        source_event_id: str = None
     ) -> bool:
         """Create an edge in the database from a detected relationship
 
@@ -250,6 +277,7 @@ If no relationships exist, return {{"relationships": []}}"""
             relationship: Relationship dict with from_entity, to_entity, relationship_type
             entity_map: Mapping of entity titles to entity IDs
             db: Database service instance
+            source_event_id: Optional ID of the event that created this relationship
 
         Returns:
             True if edge created successfully, False otherwise
@@ -277,6 +305,10 @@ If no relationships exist, return {{"relationships": []}}"""
                 'kind': rel_type,
                 'metadata': relationship.get('metadata', {})
             }
+
+            # Add source_event_id if provided
+            if source_event_id:
+                edge_data['source_event_id'] = source_event_id
 
             db.create_edge(edge_data)
             logger.info(f"Created edge: {from_title} --{rel_type}--> {to_title}")
