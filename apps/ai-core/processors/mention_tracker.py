@@ -41,11 +41,31 @@ class MentionTracker:
         return mention
 
     def should_promote(
-        self, entity_text: str, is_primary_subject: bool = False
+        self, entity_text: str, is_primary_subject: bool = False, entity_type: str = None
     ) -> bool:
-        """Determine if entity should be promoted to full entity node"""
+        """Determine if entity should be promoted to full entity node
+
+        Args:
+            entity_text: The entity text/title
+            is_primary_subject: Whether this entity is the primary subject
+            entity_type: The type of entity (person, core_identity, etc.)
+
+        Returns:
+            bool: True if entity should be promoted to database
+        """
         # Rule 1: Immediate promotion if entity is primary subject
         if is_primary_subject:
+            return True
+
+        # Rule 2: Immediate promotion for high-value entity types
+        # These are definitional and should always be captured
+        high_value_types = [
+            'core_identity',  # Goals, values, mission statements
+            'decision',       # Important decisions
+            'project',        # Projects (usually mentioned once in detail)
+            'company'         # Companies/organizations
+        ]
+        if entity_type in high_value_types:
             return True
 
         normalized_key = self._normalize_entity_name(entity_text)
@@ -55,11 +75,12 @@ class MentionTracker:
 
         mention = self.mention_cache[normalized_key]
 
-        # Rule 2: Promote after 2-3 mentions across different events
+        # Rule 3: Promote after 2-3 mentions across different events
+        # (for lower-value types like tasks, reflections, etc.)
         if mention["mention_count"] >= 2 and len(mention["events"]) >= 2:
             return True
 
-        # Rule 3: Don't promote if already promoted
+        # Rule 4: Don't promote if already promoted
         if mention["is_promoted"]:
             return False
 

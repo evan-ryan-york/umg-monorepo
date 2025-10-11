@@ -1,8 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
+from pydantic import BaseModel
 from config import settings
 from agents.archivist import Archivist
 from agents.mentor import mentor
+from agents.feedback_processor import feedback_processor
 from services.database import DatabaseService
+from services.undo_service import UndoService
 import logging
 import threading
 
@@ -22,6 +25,11 @@ app = FastAPI(
 
 # Initialize Archivist
 archivist = Archivist()
+
+# Initialize UndoService
+undo_service = UndoService()
+
+# Scheduler removed - using dynamic context gathering instead
 
 
 @app.get("/health")
@@ -92,10 +100,61 @@ async def get_status():
     }
 
 
+@app.delete("/events/{event_id}")
+async def delete_event(event_id: str):
+    """Delete an event with smart undo logic
+
+    Uses three-tier deletion:
+    1. Preserves entities referenced by other events
+    2. Decrements mention counts for shared entities
+    3. Only deletes entities unique to this event
+
+    Args:
+        event_id: UUID of the event to delete
+
+    Returns:
+        Deletion statistics and details
+    """
+    try:
+        logger.info(f"Delete request for event: {event_id}")
+        result = undo_service.delete_event_and_related_data(event_id)
+
+        if not result.get('success'):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Unknown error'))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting event {event_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/events/{event_id}/preview-delete")
+async def preview_delete(event_id: str):
+    """Preview what would be deleted without actually deleting
+
+    Useful for showing user what will happen before they confirm deletion
+
+    Args:
+        event_id: UUID of the event to analyze
+
+    Returns:
+        Analysis of what would be deleted
+    """
+    try:
+        logger.info(f"Delete preview request for event: {event_id}")
+        result = undo_service.preview_deletion(event_id)
+        return result
+    except Exception as e:
+        logger.error(f"Error previewing deletion for event {event_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start background processing on server startup"""
-    logger.info("Starting UMG AI Core - Archivist")
+    logger.info("Starting UMG AI Core - Archivist & Mentor")
 
     # Only start continuous processing if not in development mode
     if settings.ENVIRONMENT == "production":
@@ -110,11 +169,14 @@ async def startup_event():
     else:
         logger.info("Development mode - continuous processing not started. Use /process endpoint manually.")
 
+    # Scheduler removed - Mentor now uses dynamic context gathering instead of scheduled digests
+    logger.info("Mentor using dynamic context gathering (no scheduled digests)")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on server shutdown"""
-    logger.info("Shutting down UMG AI Core - Archivist")
+    logger.info("Shutting down UMG AI Core - Archivist & Mentor")
 
 
 # Mentor Agent Endpoints
@@ -158,22 +220,56 @@ async def mentor_status():
     Returns:
         {
             "status": "ready",
-            "recent_insights_count": int,
-            "last_digest": timestamp or None
+            "context_mode": "dynamic"
         }
     """
     try:
         db = DatabaseService()
-        recent_insights = db.get_recent_insights(limit=10)
+
+        # Count entities and signals for context health check
+        entity_count = db.client.table("entity").select("*", count="exact").execute().count
+        signal_count = db.client.table("signal").select("*", count="exact").execute().count
 
         return {
             "status": "ready",
-            "recent_insights_count": len(recent_insights),
-            "last_digest": recent_insights[0]["created_at"] if recent_insights else None,
-            "model": mentor.model
+            "context_mode": "dynamic",
+            "model": mentor.model,
+            "entity_count": entity_count,
+            "signal_count": signal_count
         }
     except Exception as e:
         logger.error(f"Error checking Mentor status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/mentor/trigger-daily-digest")
+async def trigger_daily_digest(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Trigger daily digest via external scheduler (e.g., cron, Vercel Cron)
+
+    Requires API key authentication via X-API-Key header.
+
+    Returns:
+        {
+            "status": "success",
+            "digest_generated": true,
+            "insights_created": int
+        }
+    """
+    # Simple API key auth
+    if x_api_key != settings.CRON_API_KEY:
+        logger.warning(f"Unauthorized trigger attempt with key: {x_api_key[:8] if x_api_key else 'None'}...")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        logger.info("External trigger for daily digest received")
+        digest = mentor.generate_daily_digest()
+        return {
+            "status": "success",
+            "digest_generated": True,
+            "insights_created": digest["insights_created"]
+        }
+    except Exception as e:
+        logger.error(f"Error in external digest trigger: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -227,6 +323,72 @@ async def debug_context():
             "raw_join_query": raw_query.data
         }
     }
+
+
+@app.post("/mentor/chat")
+async def mentor_chat(request: dict):
+    """Chat with Mentor agent
+
+    Conversational interface that:
+    - Uses knowledge graph for context-aware responses
+    - Saves messages to raw_events for Archivist processing
+    - Returns assistant response
+
+    Args:
+        request: {
+            "message": str,
+            "conversation_history": [{"role": "user"|"assistant", "content": str}],
+            "user_entity_id": str (optional)
+        }
+
+    Returns:
+        {
+            "response": str,
+            "user_event_id": str,
+            "assistant_event_id": str,
+            "entities_mentioned": [str],
+            "context_used": {...}
+        }
+    """
+    from models.chat import ChatMessage
+
+    try:
+        message = request.get("message")
+        if not message:
+            raise HTTPException(status_code=400, detail="Message is required")
+
+        # Parse conversation history
+        conversation_history = []
+        for msg in request.get("conversation_history", []):
+            conversation_history.append(
+                ChatMessage(role=msg["role"], content=msg["content"])
+            )
+
+        user_entity_id = request.get("user_entity_id")
+
+        logger.info(f"Chat request received: {message[:50]}...")
+
+        # Call mentor chat method
+        response = mentor.chat(
+            message=message,
+            conversation_history=conversation_history,
+            user_entity_id=user_entity_id
+        )
+
+        # Convert ChatResponse to dict
+        return {
+            "response": response.response,
+            "user_event_id": response.user_event_id,
+            "assistant_event_id": response.assistant_event_id,
+            "entities_mentioned": response.entities_mentioned,
+            "context_used": response.context_used
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in mentor chat: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/mentor/seed-test-data")
@@ -376,6 +538,81 @@ async def seed_test_data():
         "entities_created": len(created_entities),
         "entities": created_entities
     }
+
+
+# Feedback Endpoints
+
+class FeedbackRequest(BaseModel):
+    insight_id: str
+
+@app.post("/feedback/acknowledge")
+async def acknowledge_insight(request: FeedbackRequest):
+    """User acknowledged an insight as valuable
+
+    Actions:
+    - Boost importance scores for driver entities (+0.1)
+    - Refresh recency scores to 1.0
+    - Update insight status to 'acknowledged'
+
+    Args:
+        request: { "insight_id": "uuid" }
+
+    Returns:
+        {
+            "status": "success",
+            "action": "acknowledge",
+            "entities_updated": int,
+            "signal_changes": [...]
+        }
+    """
+    try:
+        logger.info(f"Acknowledge feedback received for insight: {request.insight_id}")
+        result = feedback_processor.process_acknowledge(request.insight_id)
+
+        if result.get('status') == 'error':
+            raise HTTPException(status_code=400, detail=result.get('message', 'Unknown error'))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing acknowledge feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/feedback/dismiss")
+async def dismiss_insight(request: FeedbackRequest):
+    """User dismissed an insight as not valuable
+
+    Actions:
+    - Lower importance scores for driver entities (-0.1)
+    - Record pattern to avoid in future insights
+    - Update insight status to 'dismissed'
+
+    Args:
+        request: { "insight_id": "uuid" }
+
+    Returns:
+        {
+            "status": "success",
+            "action": "dismiss",
+            "entities_updated": int,
+            "pattern_recorded": {...}
+        }
+    """
+    try:
+        logger.info(f"Dismiss feedback received for insight: {request.insight_id}")
+        result = feedback_processor.process_dismiss(request.insight_id)
+
+        if result.get('status') == 'error':
+            raise HTTPException(status_code=400, detail=result.get('message', 'Unknown error'))
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing dismiss feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

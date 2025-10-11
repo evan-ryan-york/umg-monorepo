@@ -2,8 +2,11 @@ from anthropic import Anthropic
 from datetime import datetime, timedelta
 from services.database import DatabaseService
 from config import settings
+from models.chat import ChatMessage, ChatResponse
+from typing import List, Optional
 import logging
 import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,315 @@ class Mentor:
         except Exception as e:
             logger.error(f"Error generating daily digest: {e}", exc_info=True)
             raise
+
+    def chat(
+        self,
+        message: str,
+        conversation_history: Optional[List[ChatMessage]] = None,
+        user_entity_id: Optional[str] = None
+    ) -> ChatResponse:
+        """
+        Conversational chat with Mentor.
+
+        Provides context-aware responses using the knowledge graph.
+        Saves both user message and assistant response to raw_events for Archivist processing.
+
+        Args:
+            message: User's message
+            conversation_history: Previous messages in conversation
+            user_entity_id: UUID of user's entity
+
+        Returns:
+            ChatResponse with assistant reply and event IDs
+        """
+        logger.info(f"Processing chat message: {message[:50]}...")
+
+        try:
+            conversation_history = conversation_history or []
+
+            # Step 1: Gather relevant context from knowledge graph
+            context = self._gather_chat_context(message)
+
+            # Step 2: Build conversational prompt
+            prompt = self._build_chat_prompt(
+                message,
+                conversation_history,
+                context
+            )
+
+            # Step 3: Call Claude
+            response = self._call_claude(prompt, "chat")
+
+            # Step 4: Extract entity mentions from user message
+            entities_mentioned = self._extract_entity_mentions(message, context)
+
+            # Step 5: Save user message to raw_events
+            user_event_id = self.db.create_raw_event({
+                "payload": {
+                    "type": "text",
+                    "content": message,
+                    "metadata": {
+                        "source_type": "mentor_chat",
+                        "role": "user"
+                    },
+                    "user_id": "default_user",
+                    "user_entity_id": user_entity_id
+                },
+                "source": "mentor_chat",
+                "status": "pending_processing"
+            })
+
+            # Step 6: Save assistant response to raw_events
+            assistant_event_id = self.db.create_raw_event({
+                "payload": {
+                    "type": "text",
+                    "content": response,
+                    "metadata": {
+                        "source_type": "mentor_chat",
+                        "role": "assistant",
+                        "user_message_event_id": user_event_id
+                    },
+                    "user_id": "default_user",
+                    "user_entity_id": user_entity_id
+                },
+                "source": "mentor_chat",
+                "status": "pending_processing"
+            })
+
+            logger.info(f"Chat response generated. Events: {user_event_id}, {assistant_event_id}")
+
+            return ChatResponse(
+                response=response,
+                user_event_id=user_event_id,
+                assistant_event_id=assistant_event_id,
+                entities_mentioned=entities_mentioned,
+                context_used={
+                    "core_identity_count": len(context.get("core_identity", [])),
+                    "high_priority_count": len(context.get("high_priority", [])),
+                    "active_work_count": len(context.get("active_work", [])),
+                    "relevant_entities_count": len(context.get("relevant_entities", [])),
+                    "relationships_count": len(context.get("relationships", []))
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Error in chat: {e}", exc_info=True)
+            raise
+
+    def _gather_chat_context(self, message: str, is_first_message: bool = False) -> dict:
+        """
+        Gather relevant context for chat based on message content
+
+        Strategy:
+        - First message: Load core identity + highest importance + recent work
+        - Subsequent messages: Extract entities mentioned + expand via relationships
+
+        Args:
+            message: User's message
+            is_first_message: Whether this is the first message in conversation
+
+        Returns:
+            Context dict with core_identity, high_priority, active_work, relevant_entities, relationships
+        """
+
+        # Always get user's core identity (goals, values, mission)
+        core_identity = self.db.get_entities_by_type("core_identity")
+
+        # Get current active work (high recency)
+        active_work = self.db.get_entities_by_signal_threshold(recency_min=0.8, limit=10)
+
+        # Get highest importance entities (what matters most)
+        high_priority = self.db.get_entities_by_importance(min_importance=0.7, limit=10)
+
+        # Extract entities mentioned in message
+        relevant_entities = []
+        relationships = []
+
+        # Extract keywords and search for matching entities
+        entity_keywords = self._extract_keywords_from_message(message)
+        logger.info(f"Extracted keywords from message: {entity_keywords}")
+
+        for keyword in entity_keywords:
+            matches = self.db.search_entities_by_title(keyword, limit=3)
+
+            for entity in matches:
+                # Add the matched entity
+                relevant_entities.append(entity)
+
+                # Expand: get all entities connected via edges
+                related = self.db.get_entity_relationships(entity['id'], limit=5)
+
+                # Add outgoing relationships (this entity -> other entities)
+                for rel in related.get("outgoing", []):
+                    relationships.append({
+                        "from": entity,
+                        "to": rel["entity"],
+                        "edge": rel["edge"]
+                    })
+                    # Add connected entity to context
+                    relevant_entities.append(rel["entity"])
+
+                # Add incoming relationships (other entities -> this entity)
+                for rel in related.get("incoming", []):
+                    relationships.append({
+                        "from": rel["entity"],
+                        "to": entity,
+                        "edge": rel["edge"]
+                    })
+                    # Add connected entity to context
+                    relevant_entities.append(rel["entity"])
+
+        # Remove duplicates
+        seen_ids = set()
+        unique_relevant = []
+        for entity in relevant_entities:
+            if entity['id'] not in seen_ids:
+                seen_ids.add(entity['id'])
+                unique_relevant.append(entity)
+
+        logger.info(
+            f"Context gathered: {len(core_identity)} core identity, "
+            f"{len(active_work)} active work, {len(high_priority)} high priority, "
+            f"{len(unique_relevant)} relevant entities, {len(relationships)} relationships"
+        )
+
+        return {
+            "core_identity": core_identity,
+            "active_work": active_work,
+            "high_priority": high_priority,
+            "relevant_entities": unique_relevant[:15],  # Top 15 most relevant
+            "relationships": relationships[:10]  # Top 10 relationships
+        }
+
+    def _build_chat_prompt(
+        self,
+        message: str,
+        conversation_history: List[ChatMessage],
+        context: dict
+    ) -> str:
+        """Build context-aware chat prompt with enhanced relationship context"""
+
+        # Format core identity
+        core_identity_str = ""
+        if context.get("core_identity"):
+            core_identity_str = "User's Goals & Values:\n"
+            for entity in context["core_identity"][:5]:
+                core_identity_str += f"- {entity['title']}: {entity.get('summary', 'N/A')}\n"
+
+        # Format high priority entities
+        high_priority_str = ""
+        if context.get("high_priority"):
+            high_priority_str = "\nHigh Priority (High Importance):\n"
+            for entity in context["high_priority"][:5]:
+                signal = entity.get("signal", {})
+                importance = signal.get("importance", 0) if isinstance(signal, dict) else 0
+                high_priority_str += f"- {entity['title']} ({entity['type']}, importance: {importance:.2f})\n"
+
+        # Format active work
+        active_work_str = ""
+        if context.get("active_work"):
+            active_work_str = "\nActive Work (High Recency):\n"
+            for entity in context["active_work"][:5]:
+                signal = entity.get("signal", {})
+                recency = signal.get("recency", 0) if isinstance(signal, dict) else 0
+                active_work_str += f"- {entity['title']} ({entity['type']}, recency: {recency:.2f})\n"
+
+        # Format relevant entities with relationships
+        relevant_str = ""
+        if context.get("relevant_entities"):
+            relevant_str = "\nRelevant Entities from Knowledge Graph:\n"
+            for entity in context["relevant_entities"][:10]:
+                relevant_str += f"- {entity['title']} ({entity['type']}): {entity.get('summary', 'N/A')}\n"
+
+        # Format relationships
+        relationships_str = ""
+        if context.get("relationships"):
+            relationships_str = "\nKnown Relationships:\n"
+            for rel in context["relationships"][:8]:
+                edge_kind = rel["edge"].get("kind", "relates_to")
+                relationships_str += f"- {rel['from']['title']} --[{edge_kind}]--> {rel['to']['title']}\n"
+
+        # Format conversation history
+        history_str = ""
+        if conversation_history:
+            history_str = "\nRecent Conversation:\n"
+            for msg in conversation_history[-5:]:  # Last 5 messages
+                role_label = "User" if msg.role == "user" else "Mentor"
+                history_str += f"{role_label}: {msg.content}\n"
+
+        prompt = f"""You are the Mentor - a strategic thinking partner with access to the user's complete knowledge graph.
+
+{core_identity_str}
+{high_priority_str}
+{active_work_str}
+{relevant_str}
+{relationships_str}
+{history_str}
+
+User's Current Message:
+{message}
+
+INSTRUCTIONS:
+1. Respond conversationally and helpfully
+2. Reference specific entities from the knowledge graph when relevant
+3. Use the relationships to provide deeper context (e.g., "The Feed feature you mentioned is connected to...")
+4. Ask strategic questions that push their thinking
+5. Be concise but insightful
+6. Challenge assumptions when appropriate
+7. Connect current topic to their goals and past work when relevant
+
+CRITICAL:
+- Ground responses in their actual work (reference entity titles)
+- Leverage relationships to show connections between entities
+- Don't just answer - ask follow-up questions when valuable
+- Be direct and actionable, not generic
+- Keep responses to 2-4 sentences unless more depth is needed
+
+Respond naturally as the Mentor:"""
+
+        return prompt
+
+    def _extract_keywords_from_message(self, message: str) -> List[str]:
+        """Extract potential entity keywords from message"""
+
+        # Remove common stop words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+                      'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
+                      'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+                      'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that',
+                      'these', 'those', 'i', 'you', 'we', 'they', 'my', 'your', 'our'}
+
+        # Simple word extraction
+        words = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b|\b[a-z]+\b', message)
+
+        # Filter and clean
+        keywords = []
+        for word in words:
+            clean_word = word.lower().strip()
+            if clean_word not in stop_words and len(clean_word) > 2:
+                keywords.append(clean_word)
+
+        return keywords
+
+    def _extract_entity_mentions(self, message: str, context: dict) -> List[str]:
+        """Extract entity titles mentioned in message"""
+
+        mentioned = []
+
+        # Check against relevant entities
+        for entity in context.get("relevant_entities", []):
+            title = entity['title'].lower()
+            if title in message.lower():
+                mentioned.append(entity['title'])
+
+        # Check against active work
+        for entity in context.get("active_work", []):
+            title = entity['title'].lower()
+            if title in message.lower():
+                if entity['title'] not in mentioned:
+                    mentioned.append(entity['title'])
+
+        return mentioned
 
     def _gather_context(self) -> dict:
         """Gather relevant context from knowledge graph"""
@@ -338,11 +650,20 @@ class Mentor:
     ) -> str:
         """Build prompt for Delta Watch card"""
 
-        goal_list = [f"- {g['title']}: {g.get('summary', 'No summary')}" for g in goals]
-        work_list = [
-            f"- {w['title']} ({w['type']}): {w.get('summary', 'No summary')}"
-            for w in actual_work
-        ]
+        # Build entity lists with IDs explicitly mapped
+        goal_list = []
+        goal_id_map = {}
+        for g in goals:
+            entity_id = g.get('id')
+            goal_list.append(f"- [{entity_id}] {g['title']}: {g.get('summary', 'No summary')}")
+            goal_id_map[g['title']] = entity_id
+
+        work_list = []
+        work_id_map = {}
+        for w in actual_work:
+            entity_id = w.get('id')
+            work_list.append(f"- [{entity_id}] {w['title']} ({w['type']}): {w.get('summary', 'No summary')}")
+            work_id_map[w['title']] = entity_id
 
         # Build dismissed pattern context
         dismissed_context = ""
@@ -380,11 +701,14 @@ Return ONLY a JSON object (no markdown, no code blocks):
 {{
     "title": "Brief headline (5-8 words)",
     "body": "2-3 sentence insight with specific examples",
-    "driver_entity_ids": ["uuid1", "uuid2"],
+    "driver_entity_ids": ["uuid-from-brackets-above", "another-uuid"],
     "alignment_score": 0.85
 }}
 
-IMPORTANT: Return ONLY the JSON object, nothing else."""
+IMPORTANT:
+- Use the actual UUIDs from the brackets [uuid] in the lists above
+- driver_entity_ids must contain the UUIDs of the entities you reference
+- Return ONLY the JSON object, nothing else."""
 
         return prompt
 
@@ -396,9 +720,13 @@ IMPORTANT: Return ONLY the JSON object, nothing else."""
             current = conn["current"]
             historical = conn["historical"][0]  # Best match
             created_date = historical.get("created_at", "")[:10]
+
+            current_id = current.get('id')
+            historical_id = historical.get('id')
+
             connection_list.append(
-                f"Current: {current['title']} ({current['type']})\n"
-                f"  → Historical: {historical['title']} from {created_date}"
+                f"Current: [{current_id}] {current['title']} ({current['type']})\n"
+                f"  → Historical: [{historical_id}] {historical['title']} from {created_date}"
             )
 
         dismissed_context = ""
@@ -429,12 +757,15 @@ Return ONLY a JSON object (no markdown, no code blocks):
 {{
     "title": "Brief headline (5-8 words)",
     "body": "2-3 sentence insight connecting past to present",
-    "driver_entity_ids": ["current_uuid", "historical_uuid"],
+    "driver_entity_ids": ["current-uuid-from-brackets", "historical-uuid-from-brackets"],
     "driver_edge_ids": [],
     "relevance_score": 0.75
 }}
 
-IMPORTANT: Return ONLY the JSON object, nothing else."""
+IMPORTANT:
+- Use the actual UUIDs from the brackets [uuid] in the connections above
+- driver_entity_ids should include both current and historical entity UUIDs
+- Return ONLY the JSON object, nothing else."""
 
         return prompt
 
@@ -443,10 +774,15 @@ IMPORTANT: Return ONLY the JSON object, nothing else."""
     ) -> str:
         """Build prompt for Prompt card"""
 
-        work_summary = [
-            f"- {w['title']}: {w.get('summary', 'No summary')}" for w in recent_work[:5]
-        ]
-        goal_summary = [f"- {g['title']}" for g in goals]
+        work_summary = []
+        for w in recent_work[:5]:
+            entity_id = w.get('id')
+            work_summary.append(f"- [{entity_id}] {w['title']}: {w.get('summary', 'No summary')}")
+
+        goal_summary = []
+        for g in goals:
+            entity_id = g.get('id')
+            goal_summary.append(f"- [{entity_id}] {g['title']}")
 
         dismissed_context = ""
         prompt_dismissed = [
@@ -483,10 +819,13 @@ Return ONLY a JSON object (no markdown, no code blocks):
 {{
     "title": "The Question (as headline)",
     "body": "1-2 sentence setup explaining why this question matters now",
-    "driver_entity_ids": ["uuid1", "uuid2"]
+    "driver_entity_ids": ["uuid-from-brackets-above", "another-uuid"]
 }}
 
-IMPORTANT: Return ONLY the JSON object, nothing else."""
+IMPORTANT:
+- Use the actual UUIDs from the brackets [uuid] in the lists above
+- driver_entity_ids should include the UUIDs of work/goals you reference
+- Return ONLY the JSON object, nothing else."""
 
         return prompt
 

@@ -108,8 +108,8 @@ class Archivist:
                     is_primary
                 )
 
-                # Check if should promote
-                if self.mention_tracker.should_promote(entity_title, is_primary):
+                # Check if should promote (pass entity_type for better promotion logic)
+                if self.mention_tracker.should_promote(entity_title, is_primary, entity_type):
                     # Check if already exists (mention tracker first, then database)
                     existing_id = self.mention_tracker.get_existing_entity_id(entity_title)
 
@@ -127,16 +127,37 @@ class Archivist:
                         entity_ids.append(existing_id)
                         entity_map[entity_title] = existing_id
                         logger.info(f"✅ [DEBUG] Using existing entity '{entity_title}': {existing_id[:8]}...")
+
+                        # Update reference tracking for existing entity
+                        existing_entity = self.db.get_entity_by_id(existing_id)
+                        if existing_entity:
+                            referenced_by = existing_entity.metadata.get('referenced_by_event_ids', [])
+                            if event_id not in referenced_by:
+                                referenced_by.append(event_id)
+
+                            mention_count = existing_entity.metadata.get('mention_count', 0) + 1
+
+                            self.db.update_entity_metadata(existing_id, {
+                                **existing_entity.metadata,
+                                'referenced_by_event_ids': referenced_by,
+                                'mention_count': mention_count
+                            })
+                            logger.info(f"Updated entity {existing_id[:8]}... mention_count: {mention_count}, events: {len(referenced_by)}")
                     else:
                         # Determine if this should be a hub entity
                         is_hub = entity_type in ['project', 'feature', 'decision']
+
+                        # Initialize reference tracking metadata
+                        entity_metadata = entity_data.get('metadata', {})
+                        entity_metadata['referenced_by_event_ids'] = [event_id]
+                        entity_metadata['mention_count'] = 1
 
                         entity_payload = {
                             'source_event_id': event_id,
                             'type': entity_type,
                             'title': entity_title,
                             'summary': entity_data.get('summary', ''),
-                            'metadata': entity_data.get('metadata', {}),
+                            'metadata': entity_metadata,
                         }
 
                         try:
@@ -229,7 +250,15 @@ class Archivist:
                     logger.error(f"Error linking user entity to person entity: {e}")
 
             # Step 5: Create spoke entity if hub exists
-            if hub_entity_id and event.source in ['quick_capture', 'voice_debrief', 'webhook_granola']:
+            # Skip spoke creation for core identity documents (where multiple core_identity entities were extracted)
+            core_identity_count = sum(1 for e in extracted_entities if e.get('type') == 'core_identity')
+            should_create_spoke = (
+                hub_entity_id and
+                event.source in ['quick_capture', 'voice_debrief', 'webhook_granola'] and
+                core_identity_count < 2  # Don't create spoke for core identity documents (they have many core_identity entities)
+            )
+
+            if should_create_spoke:
                 # Determine spoke type based on content
                 spoke_type = 'meeting_note' if 'meeting' in cleaned_text.lower() else 'reflection'
 
@@ -244,6 +273,8 @@ class Archivist:
                 spoke_id = self.db.create_spoke_entity(hub_entity_id, spoke_payload, source_event_id=event_id)
                 entity_ids.append(spoke_id)
                 logger.info(f"Created spoke entity {spoke_id} linked to hub {hub_entity_id}")
+            elif hub_entity_id and core_identity_count >= 2:
+                logger.info(f"Skipping spoke creation - this appears to be a core identity document ({core_identity_count} core_identity entities)")
 
             # Step 6: Relationship Mapping (UPDATED - now includes existing entities and reference map)
             relationships = self.relationship_mapper.detect_relationships(

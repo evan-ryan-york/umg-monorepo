@@ -1,144 +1,219 @@
+'use client';
+
+import { useState } from 'react';
 import type { ArchivistLogEntry } from '@repo/db';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Calendar, FileText, CheckCircle, ArrowRight, TrendingUp, Clock, Sparkles, Trash2 } from 'lucide-react';
 
 interface LogItemProps {
   log: ArchivistLogEntry;
+  onDelete?: (id: string) => void;
 }
 
-export function LogItem({ log }: LogItemProps): React.ReactElement {
+export function LogItem({ log, onDelete }: LogItemProps): React.ReactElement {
   const { rawEvent, createdEntities, createdEdges, summary, signals } = log;
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    if (!confirm('Delete this entry and all related data? This cannot be undone.')) {
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      const response = await fetch(`/api/events/${rawEvent.id}`, {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        onDelete?.(rawEvent.id);
+      } else {
+        alert(`Failed to delete: ${data.error}`);
+        setIsDeleting(false);
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+      alert('Failed to delete entry');
+      setIsDeleting(false);
+    }
+  };
 
   return (
-    <div className="border rounded-lg p-6 bg-white shadow-sm">
-      {/* Raw Event Header */}
-      <div className="mb-4">
-        <h3 className="text-lg font-semibold mb-2">📦 RAW EVENT</h3>
-        <div className="text-sm text-gray-600 space-y-1">
-          <p>ID: {rawEvent.id.slice(0, 8)}...</p>
-          <p>🗓️ {new Date(rawEvent.created_at).toLocaleString()}</p>
-          <p>✍️ Source: {rawEvent.source}</p>
-          <p>
-            Status:{' '}
-            <span
-              className={
-                rawEvent.status === 'processed'
-                  ? 'text-green-600 font-medium'
-                  : 'text-yellow-600 font-medium'
-              }
-            >
-              {rawEvent.status}
-            </span>
-          </p>
+    <Card className={isDeleting ? 'opacity-50 pointer-events-none' : ''}>
+      <CardHeader className="pb-4">
+        <div className="flex items-start justify-between">
+          <div className="space-y-2 flex-1">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-mono text-muted-foreground">
+                {rawEvent.id.slice(0, 8)}...
+              </CardTitle>
+            </div>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1">
+                <Calendar className="h-3 w-3" />
+                {new Date(rawEvent.created_at).toLocaleString()}
+              </div>
+              <Badge variant="outline" className="text-xs">
+                {rawEvent.source}
+              </Badge>
+              <Badge variant={rawEvent.status === 'processed' ? 'default' : 'secondary'} className="text-xs">
+                <CheckCircle className="h-3 w-3 mr-1" />
+                {rawEvent.status}
+              </Badge>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleDelete}
+            disabled={isDeleting}
+            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
         </div>
-        <blockquote className="mt-3 border-l-4 border-gray-300 pl-4 italic text-gray-700 bg-gray-50 py-2 rounded-r">
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {/* Raw Event Content */}
+        <blockquote className="border-l-2 border-primary pl-4 italic text-sm">
           {rawEvent.payload.content}
         </blockquote>
-      </div>
 
-      {/* Archivist Actions */}
-      <div className="border-t pt-4">
-        <h4 className="font-semibold mb-3 text-lg">🧠 ARCHIVIST&apos;S ACTIONS</h4>
+        {/* Archivist Actions */}
+        <div className="pt-4 space-y-4">
+          <h4 className="font-semibold flex items-center gap-2 text-sm">
+            <Sparkles className="h-4 w-4 text-primary" />
+            Archivist&apos;s Analysis
+          </h4>
 
-        {/* Entities */}
-        {createdEntities.length > 0 && (
-          <div className="mb-4">
-            <p className="font-medium mb-2">
-              ✨ Entities Created ({createdEntities.length}):
-            </p>
-            <ul className="ml-4 space-y-2">
-              {createdEntities.map((entity) => {
-                const entitySignal = signals.find((s) => s.entity_id === entity.id);
-                return (
-                  <li key={entity.id} className="text-sm">
-                    <div className="flex items-start gap-2">
-                      <span>{getEntityEmoji(entity.type)}</span>
-                      <div className="flex-1">
-                        <span className="font-medium">{entity.type}</span>: &quot;
-                        {entity.title}&quot;
-                        {entity.summary && (
-                          <div className="text-gray-600 text-xs mt-1">
-                            {entity.summary}
+          {/* Entities */}
+          {createdEntities.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-sm font-medium flex items-center gap-2">
+                <Sparkles className="h-3.5 w-3.5" />
+                Entities Extracted ({createdEntities.length})
+              </p>
+              <div className="space-y-3">
+                {createdEntities.map((entity) => {
+                  const entitySignal = signals.find((s) => s.entity_id === entity.id);
+                  return (
+                    <div key={entity.id} className="bg-muted/50 rounded-lg p-3 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <span className="text-lg">{getEntityEmoji(entity.type)}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <Badge variant="secondary" className="text-xs">
+                              {entity.type}
+                            </Badge>
+                            <span className="font-medium text-sm truncate">
+                              {entity.title}
+                            </span>
                           </div>
-                        )}
-                        {entitySignal && (
-                          <div className="text-xs text-gray-500 mt-1 space-y-0.5">
-                            <div>
-                              → <span className="font-semibold">Importance</span> (I): {entitySignal.importance.toFixed(2)}{' '}
-                              <span className="text-gray-400">
-                                (how central this is - higher for hub entities like projects)
-                              </span>
+                          {entity.summary && (
+                            <p className="text-xs text-muted-foreground mt-1.5">
+                              {entity.summary}
+                            </p>
+                          )}
+                          {entitySignal && (
+                            <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                              <div className="flex items-center gap-1">
+                                <TrendingUp className="h-3 w-3 text-primary" />
+                                <span className="font-medium">I:</span>
+                                <span>{entitySignal.importance.toFixed(2)}</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <Clock className="h-3 w-3 text-blue-500" />
+                                <span className="font-medium">R:</span>
+                                <span>{entitySignal.recency.toFixed(2)}</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <Sparkles className="h-3 w-3 text-purple-500" />
+                                <span className="font-medium">N:</span>
+                                <span>{entitySignal.novelty.toFixed(2)}</span>
+                              </div>
                             </div>
-                            <div>
-                              → <span className="font-semibold">Recency</span> (R): {entitySignal.recency.toFixed(2)}{' '}
-                              <span className="text-gray-400">
-                                (how recently created - decays over time)
-                              </span>
-                            </div>
-                            <div>
-                              → <span className="font-semibold">Novelty</span> (N): {entitySignal.novelty.toFixed(2)}{' '}
-                              <span className="text-gray-400">
-                                (how new this is - based on connection count)
-                              </span>
-                            </div>
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-        {/* Edges */}
-        {createdEdges.length > 0 && (
-          <div className="mb-4">
-            <p className="font-medium mb-2">
-              🔗 Relationships Mapped ({createdEdges.length}):
-            </p>
-            <ul className="ml-4 space-y-1">
-              {createdEdges.map((edge) => {
-                // Detect hub-spoke relationships
-                const isHubSpoke =
-                  edge.kind === 'relates_to' &&
-                  (edge.fromEntity.type === 'meeting_note' ||
-                    edge.fromEntity.type === 'reflection' ||
-                    edge.toEntity.type === 'project' ||
-                    edge.toEntity.type === 'feature' ||
-                    edge.toEntity.type === 'decision');
+          {/* Edges */}
+          {createdEdges.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-sm font-medium flex items-center gap-2">
+                <ArrowRight className="h-3.5 w-3.5" />
+                Relationships Mapped ({createdEdges.length})
+              </p>
+              <div className="space-y-2">
+                {createdEdges.map((edge) => {
+                  // Detect hub-spoke relationships
+                  const isHubSpoke =
+                    edge.kind === 'relates_to' &&
+                    (edge.fromEntity.type === 'meeting_note' ||
+                      edge.fromEntity.type === 'reflection' ||
+                      edge.toEntity.type === 'project' ||
+                      edge.toEntity.type === 'feature' ||
+                      edge.toEntity.type === 'decision');
 
-                return (
-                  <li key={edge.id} className="text-sm text-gray-700">
-                    &quot;{edge.fromEntity.title}&quot;{' '}
-                    <span className="text-blue-600 font-mono text-xs">
-                      --[{edge.kind}]--&gt;
-                    </span>{' '}
-                    &quot;{edge.toEntity.title}&quot;
-                    {isHubSpoke && (
-                      <span className="text-xs text-blue-600 ml-2 font-medium">
-                        (SPOKE→HUB)
+                  return (
+                    <div key={edge.id} className="flex items-center gap-2 text-xs bg-muted/30 rounded px-3 py-2">
+                      <span className="font-medium truncate max-w-[40%]">
+                        {edge.fromEntity.title}
                       </span>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                          {edge.kind}
+                        </Badge>
+                        <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                      </div>
+                      <span className="font-medium truncate max-w-[40%]">
+                        {edge.toEntity.title}
+                      </span>
+                      {isHubSpoke && (
+                        <Badge variant="secondary" className="text-[10px] ml-auto">
+                          HUB
+                        </Badge>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-        {/* Summary */}
-        <div className="mb-3 bg-gray-50 p-3 rounded border border-gray-200">
-          <p className="font-medium mb-2">📊 Data Processed:</p>
-          <ul className="ml-4 space-y-1 text-sm text-gray-700">
-            <li>• Text split into {summary.chunkCount} chunks</li>
-            <li>
-              • {summary.embeddingCount} vector embeddings generated (1536 dimensions)
-            </li>
-            <li>• {summary.signalCount} signals assigned to new entities</li>
-          </ul>
+          {/* Summary */}
+          <div className="bg-muted/30 p-3 rounded-lg border">
+            <p className="text-xs font-medium mb-2 text-muted-foreground">Processing Summary</p>
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <div>
+                <div className="font-semibold">{summary.chunkCount}</div>
+                <div className="text-muted-foreground">Chunks</div>
+              </div>
+              <div>
+                <div className="font-semibold">{summary.embeddingCount}</div>
+                <div className="text-muted-foreground">Embeddings</div>
+              </div>
+              <div>
+                <div className="font-semibold">{summary.signalCount}</div>
+                <div className="text-muted-foreground">Signals</div>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 

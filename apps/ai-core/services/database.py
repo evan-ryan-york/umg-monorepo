@@ -251,6 +251,30 @@ class DatabaseService:
             logger.error(f"Error getting entity by title: {e}")
             return None
 
+    def search_entities_by_title(self, search_term: str, limit: int = 5) -> List[Dict]:
+        """
+        Search for entities by title (case-insensitive partial match)
+
+        Args:
+            search_term: Text to search for in entity titles
+            limit: Maximum number of results to return
+
+        Returns:
+            List of matching entity dicts
+        """
+        try:
+            response = (
+                self.client.table("entity")
+                .select("*")
+                .ilike("title", f"%{search_term}%")
+                .limit(limit)
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Error searching entities by title: {e}")
+            return []
+
     # Mentor Agent Methods
     def get_entities_by_type(self, entity_type: str) -> List[Dict]:
         """Get all entities of a specific type"""
@@ -411,6 +435,104 @@ class DatabaseService:
             return response.data or []
         except Exception as e:
             logger.error(f"Error fetching similar entities: {e}")
+            return []
+
+    def get_entity_relationships(self, entity_id: str, limit: int = 10) -> Dict[str, Any]:
+        """
+        Get all entities connected to this entity via edges
+
+        Returns:
+            {
+                "outgoing": [{"edge": {...}, "entity": {...}}],  # from_id = entity_id
+                "incoming": [{"edge": {...}, "entity": {...}}]   # to_id = entity_id
+            }
+        """
+        try:
+            # Get outgoing edges (from this entity)
+            outgoing_response = (
+                self.client.table("edge")
+                .select("*, to:entity!edge_to_id_fkey(*)")
+                .eq("from_id", entity_id)
+                .limit(limit)
+                .execute()
+            )
+
+            # Get incoming edges (to this entity)
+            incoming_response = (
+                self.client.table("edge")
+                .select("*, from:entity!edge_from_id_fkey(*)")
+                .eq("to_id", entity_id)
+                .limit(limit)
+                .execute()
+            )
+
+            outgoing = []
+            for edge in outgoing_response.data or []:
+                to_entity = edge.pop("to", None)
+                if to_entity:
+                    outgoing.append({"edge": edge, "entity": to_entity})
+
+            incoming = []
+            for edge in incoming_response.data or []:
+                from_entity = edge.pop("from", None)
+                if from_entity:
+                    incoming.append({"edge": edge, "entity": from_entity})
+
+            return {
+                "outgoing": outgoing,
+                "incoming": incoming
+            }
+        except Exception as e:
+            logger.error(f"Error fetching entity relationships for {entity_id}: {e}")
+            return {"outgoing": [], "incoming": []}
+
+    def get_entities_by_importance(self, min_importance: float = 0.7, limit: int = 10) -> List[Dict]:
+        """
+        Get top entities by importance score
+
+        Args:
+            min_importance: Minimum importance threshold
+            limit: Maximum number of results
+
+        Returns:
+            List of entities with their signals, sorted by importance descending
+        """
+        try:
+            response = (
+                self.client.table("entity")
+                .select("id, title, type, summary, metadata, created_at, signal(*)")
+                .limit(limit * 2)  # Over-fetch for filtering
+                .execute()
+            )
+
+            entities = response.data or []
+
+            # Filter and sort by importance
+            filtered = []
+            for entity in entities:
+                signal = entity.get("signal")
+
+                if isinstance(signal, list):
+                    if len(signal) == 0:
+                        continue
+                    signal = signal[0]
+
+                if not isinstance(signal, dict):
+                    continue
+
+                importance = signal.get("importance", 0)
+                if importance < min_importance:
+                    continue
+
+                entity["signal"] = signal
+                filtered.append(entity)
+
+            # Sort by importance descending
+            filtered.sort(key=lambda e: e["signal"].get("importance", 0), reverse=True)
+
+            return filtered[:limit]
+        except Exception as e:
+            logger.error(f"Error fetching entities by importance: {e}")
             return []
 
     @staticmethod
