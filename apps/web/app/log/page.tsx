@@ -1,7 +1,6 @@
 import { LogList } from '@/components/LogList';
 import { ResetButton } from '@/components/ResetButton';
-import { NavBar } from '@/components/NavBar';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import type { ArchivistLogEntry } from '@repo/db';
 import { createClient } from '@supabase/supabase-js';
@@ -174,7 +173,7 @@ export default async function ArchivistLogPage(): Promise<React.ReactElement> {
               <strong className="font-semibold">Entities:</strong> Important concepts the AI extracted (people, projects, features, decisions). Hub entities (🚀 projects, 🎯 decisions) are central nodes that other notes connect to.
             </div>
             <div>
-              <strong className="font-semibold">Relationships:</strong> How entities connect. For example, a meeting note might "relate to" a project.
+              <strong className="font-semibold">Relationships:</strong> How entities connect. For example, a meeting note might &ldquo;relate to&rdquo; a project.
             </div>
             <div>
               <strong className="font-semibold">Signals:</strong> Scoring metrics that help surface relevant memories:

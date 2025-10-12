@@ -287,7 +287,7 @@ class Archivist:
             # Build complete entity_map including both new and existing entities
             complete_entity_map = dict(entity_map)  # Start with newly created entities
             for existing_entity in existing_entities:
-                complete_entity_map[existing_entity['title']] = existing_entity['id']
+                complete_entity_map[existing_entity.title] = existing_entity.id
 
             edges_created = 0
             for rel in relationships:

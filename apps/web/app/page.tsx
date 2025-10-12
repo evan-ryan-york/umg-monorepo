@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { NavBar } from '@/components/NavBar';
 import { CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
 export default function Home(): React.ReactElement {
