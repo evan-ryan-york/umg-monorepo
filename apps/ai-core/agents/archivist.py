@@ -32,6 +32,12 @@ class Archivist:
 
         logger.info("Archivist initialized with all processors")
 
+    def clear_cache(self) -> None:
+        """Clear all in-memory caches (called after database reset)"""
+        logger.info("Clearing Archivist in-memory cache")
+        self.mention_tracker = MentionTracker()  # Reinitialize with empty cache
+        logger.info("Cache cleared successfully")
+
     def process_event(self, event_id: str) -> Dict:
         """Process a single raw event through the full pipeline
 
@@ -277,10 +283,21 @@ class Archivist:
                 logger.info(f"Skipping spoke creation - this appears to be a core identity document ({core_identity_count} core_identity entities)")
 
             # Step 6: Relationship Mapping (UPDATED - now includes existing entities and reference map)
+            # Convert existing entities (Pydantic objects) to dictionaries for relationship mapper
+            existing_entities_dict = [
+                {
+                    'id': e.id,
+                    'title': e.title,
+                    'type': e.type,
+                    'summary': e.summary
+                }
+                for e in existing_entities
+            ]
+
             relationships = self.relationship_mapper.detect_relationships(
                 cleaned_text,
                 extracted_entities,
-                existing_entities=existing_entities,
+                existing_entities=existing_entities_dict,
                 reference_map=reference_map
             )
 

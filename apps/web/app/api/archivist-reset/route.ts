@@ -75,6 +75,23 @@ export async function POST(): Promise<NextResponse> {
       throw eventsError;
     }
 
+    // 7. Clear the ai-core service's in-memory cache
+    try {
+      const aiCoreResponse = await fetch('http://127.0.0.1:8000/reset-cache', {
+        method: 'POST',
+      });
+
+      if (!aiCoreResponse.ok) {
+        console.error('Warning: Failed to clear ai-core cache:', await aiCoreResponse.text());
+        // Don't throw - database is already cleared, just log the warning
+      } else {
+        console.log('✅ AI-core cache cleared successfully');
+      }
+    } catch (cacheError) {
+      console.error('Warning: Could not reach ai-core service to clear cache:', cacheError);
+      // Don't throw - database is already cleared, just log the warning
+    }
+
     return NextResponse.json({
       success: true,
       message: 'All Archivist data cleared successfully',

@@ -46,34 +46,52 @@ The Archivist operates as a continuous background process that monitors the `raw
 - Makes text ready for AI processing
 
 ### **Step 3: Identifies Important Concepts (Entities)**
-Uses Claude to extract:
-- **People**: "Sarah"
-- **Projects**: "Willow Education"
-- **Features**: "Feed feature"
-- **Tasks**: "Update docs", "Tell the team"
-- **Decisions**: "We decided to rename it"
-- **Core Identity**: Values, goals, mission statements (e.g., "Impact rooted in Equity")
+Uses Claude to extract entities based on **salience** (how important/central they are to the text):
+
+**21 Entity Types** organized into categories:
+
+**People & Organizations:**
+- **People**: "Sarah", "Ryan York"
+- **Organizations**: "Willow Education", "The Gathering Place"
+- **Teams**: "Product Team", "Engineering Team"
+
+**Work & Career:**
+- **Projects**: Major initiatives like "WaterOS pilot"
+- **Products**: Features being built like "AI college advisory"
+- **Roles**: Job positions like "CTO at Willow Education"
+- **Skills**: Capabilities like "JavaScript", "Product Design"
+- **Tasks**: Action items like "Update docs"
+- **Goals**: Objectives like "Scale to 10,000 students"
+- **Milestones**: Achievements like "Won Sally Ride award"
+
+**Knowledge & Identity:**
+- **Core Identity**: Values, mission, principles that define you
+- **Concepts**: Abstract ideas like "0-to-1 Systems Building"
+- **Decisions**: Important choices made
+- **Insights**: Realizations and learnings
+- **Sources**: Books, articles, research
+
+**Temporal & Spatial:**
+- **Events**: Conferences, launches, pivotal moments
+- **Locations**: Places that matter like "San Antonio, TX"
+
+**Captured Thoughts:**
+- **Meeting Notes**: Transcripts and summaries
+- **Reflections**: Personal journal entries
 
 **Smart Extraction Strategy**:
 
-The Archivist uses different strategies based on content type:
+The Archivist extracts based on **salience**, not document type:
+- **Primary subjects** → Extract immediately (is_primary_subject: true)
+- **Concepts mentioned multiple times or with detail** → Extract
+- **Passing references** → Skip unless critical context
 
-**For conversational/work notes** (e.g., "Had a meeting with Sarah about Feed"):
-- Extracts people, projects, features, tasks, decisions
-- Uses mention tracking to avoid creating entities for passing references
-- First mention → Just tags in metadata
-- 2-3 mentions across different events → Promotes to full entity
-- Primary subject of your note → Immediate entity creation
+**No Arbitrary Limits**:
+- If there are 8 values, extract all 8 (don't consolidate to hit quotas)
+- If there are 2 goals, extract 2 (don't invent more)
+- Only consolidate concepts that are ACTUALLY THE SAME thing phrased differently
 
-**For biographical/core identity text** (e.g., "My mission is to solve the water crisis"):
-- Extracts 3-5 core VALUES (not every value mentioned, only the fundamental ones)
-- Extracts 1-3 primary GOALS (not sub-goals or means to an end)
-- Extracts the ONE overarching MISSION (if clearly stated)
-- Prefers consolidation over granularity
-- Example: "Innovation and Independence" (merged) instead of two separate entities
-- All core_identity entities are promoted immediately (importance=1.0)
-
-**Why This Matters**: The Archivist adapts its extraction approach to match content type. Work notes need conservative extraction (avoid clutter), while core identity documents need comprehensive extraction (capture your values/goals completely). This ensures the Mentor has clean, consolidated data to detect goal alignment and challenge assumptions.
+**Why This Matters**: The Archivist captures ALL salient entities regardless of content type. Resume data gets full extraction (roles, organizations, skills, milestones with dates). Core identity documents get complete extraction (all values, all goals). No artificial limits or content-type branching.
 
 ### **Step 4: Tracks Name Changes (Aliases)**
 Detects when you rename things:
@@ -90,13 +108,40 @@ Connects entities across events:
 **Pronoun Resolution**: Maps "I/me/my" to your person entity
 
 ### **Step 6: Connects Related Concepts (Relationships/Edges)**
-Creates typed connections between entities:
-- Feed feature `belongs_to` → Willow project
-- Today's meeting `modifies` → Feed feature (because of rename)
-- Meeting `mentions` → Sarah (person)
-- Task "Update docs" `belongs_to` → Feed feature
+Creates typed connections between entities with **temporal data** and **descriptions**:
 
-**7 Edge Types**: `belongs_to`, `modifies`, `mentions`, `informs`, `blocks`, `contradicts`, `relates_to`
+**Examples:**
+- Ryan York `worked_at` Willow Education (start: 2024-01-01, end: null, description: "Chief Technology Officer")
+- Ryan York `founded` The Gathering Place (start: 2018-05-01, end: 2023-12-31, description: "Co-Founder")
+- Feed product `belongs_to` → Willow project
+- Today's meeting `modifies` → Feed product (because of rename)
+- Meeting `mentions` → Sarah (person)
+- Task "Update docs" `belongs_to` → Feed product
+
+**Relationship Types** (16 types):
+
+**Work & Career:**
+- `worked_at` - Employment relationships with dates and role descriptions
+- `attended` - Education with dates and degree info
+- `founded` - Created organizations
+- `led` - Leadership roles with temporal bounds
+- `participated_in` - Project participation
+
+**Knowledge & Learning:**
+- `learned_from` - Knowledge sources
+- `achieved` - Milestones reached (with achievement date)
+
+**Location & Temporal:**
+- `lived_in` - Residency with date ranges
+
+**Hierarchical & Structural:**
+- `belongs_to`, `modifies`, `mentions`, `informs`
+
+**Dependencies & Conflicts:**
+- `blocks`, `contradicts`
+
+**General & Identity:**
+- `relates_to`, `values`, `owns`, `manages`, `contributes_to`
 
 ### **Step 7: Builds Hub-and-Spoke Structures**
 For complex topics like "Feed feature":
@@ -292,39 +337,73 @@ global water crisis through WaterOS. Success means building a self-sustaining en
 
 ## Entity Types
 
-The Archivist recognizes and creates these entity types:
+The Archivist recognizes and creates 21 entity types organized into 6 categories:
 
-**Work-related**:
-- `project` - Major initiatives (e.g., "Willow Project")
-- `feature` - Product features (e.g., "Feed")
-- `task` - Action items
+**People & Organizations:**
+- `person` - Individuals (e.g., "Sarah", "Ryan York")
+- `organization` - Companies, nonprofits, schools (e.g., "Willow Education", "The Gathering Place")
+- `team` - Groups within organizations (e.g., "Product Team")
 
-**Relationship**:
-- `person` - People mentioned (e.g., "Sarah")
-- `company` - Organizations
+**Work & Career:**
+- `project` - Major initiatives (e.g., "WaterOS pilot")
+- `product` - Features/products being built (e.g., "AI college advisory", "Feed feature")
+- `role` - Job titles/positions (e.g., "CTO at Willow Education", "Principal at RePublic High School")
+- `skill` - Capabilities, expertise (e.g., "JavaScript", "Product Design")
+- `task` - Action items (e.g., "Update docs")
+- `goal` - Objectives being worked toward (e.g., "Scale to 10,000 students")
+- `milestone` - Significant achievements (e.g., "Won Sally Ride award", "Secured $3M funding")
 
-**Thought entities**:
+**Knowledge & Identity:**
+- `core_identity` - Values, mission, principles that define you (importance=1.0)
+- `concept` - Abstract ideas, frameworks (e.g., "0-to-1 Systems Building")
+- `decision` - Important choices made (e.g., "Chose to expose company failure")
+- `insight` - Realizations, learnings (e.g., "Failure is misallocation of energy")
+- `source` - Books, articles, podcasts, research (e.g., "The Lean Startup")
+
+**Temporal & Spatial:**
+- `event` - Discrete happenings (e.g., "Nashville charter partnership launch", "School facility acquisition")
+- `location` - Places that matter (e.g., "San Antonio, TX", "Nashville, TN")
+
+**Captured Thoughts:**
 - `meeting_note` - Meeting transcripts/notes
-- `reflection` - Personal reflections
-- `decision` - Important decisions made
-
-**Knowledge**:
-- `core_identity` - Your values, mission, principles (importance=1.0)
-- `reference_document` - External research, documentation
+- `reflection` - Personal reflections, journal entries
 
 ---
 
 ## Relationship Types
 
-The Archivist creates these typed edges between entities:
+The Archivist creates 16 typed edges between entities, with support for temporal data (start_date, end_date), descriptions, and confidence scoring:
 
-- **belongs_to**: Hierarchical ownership (Feature belongs_to Project)
-- **modifies**: Changes/updates (Meeting modifies Feature via rename)
+**Work & Career** (with temporal support):
+- **worked_at**: Employment relationships (e.g., "Ryan York worked_at Willow Education from 2024-01-01, description: 'CTO'")
+- **attended**: Education (e.g., "Ryan York attended Middle Tennessee State University from 2003-2007, description: 'Bachelor of Science'")
+- **founded**: Created organizations (e.g., "Ryan York founded The Gathering Place in 2018-05-01")
+- **led**: Leadership roles with date ranges and descriptions
+- **participated_in**: Project participation with timeframes
+
+**Knowledge & Learning:**
+- **learned_from**: Knowledge sources (Person → Source)
+- **achieved**: Milestones reached (Person → Milestone, with achievement date)
+
+**Location & Temporal:**
+- **lived_in**: Residency with date ranges (Person → Location)
+
+**Hierarchical & Structural:**
+- **belongs_to**: Hierarchical ownership (Product belongs_to Project)
+- **modifies**: Changes/updates (Meeting modifies Product via rename)
 - **mentions**: References (Reflection mentions Person)
 - **informs**: Knowledge transfer (Research informs Decision)
+
+**Dependencies & Conflicts:**
 - **blocks**: Dependencies (Task blocks Task)
 - **contradicts**: Tensions (Strategy contradicts Previous approach)
+
+**General & Identity:**
 - **relates_to**: General connection (Spoke relates_to Hub)
+- **values**: Identity relationship (Person values Core_identity)
+- **owns**: Ownership/responsibility (Person owns Goal/Project)
+- **manages**: Management (Person manages Team/Project)
+- **contributes_to**: Contribution (Person contributes_to Project)
 
 ---
 
@@ -367,14 +446,18 @@ The Archivist creates these typed edges between entities:
 
 ## Current Status
 
-**✅ Fully Operational** (as of 2025-10-11)
+**✅ Fully Operational** (as of 2025-10-26)
 
 **Implemented Features**:
 - Full 9-step processing pipeline
-- **Smart entity extraction** with content-aware strategies (work notes vs core identity documents)
-- **Consolidated entity creation** - avoids redundancy (e.g., merges overlapping values)
-- **Intelligent promotion rules** - auto-promotes core_identity, decision, project, company types
-- **Smart spoke creation** - skips redundant reflection spokes for core identity documents
+- **Salience-based entity extraction** - extracts based on importance, not document type
+- **21 entity types** - complete taxonomy including role, organization, skill, milestone, location, event
+- **No arbitrary limits** - extracts all salient entities (no more "3-5 values" quotas)
+- **Temporal relationships** - edges support start_date, end_date, description, confidence, importance
+- **16 relationship types** - including worked_at, founded, led, achieved, attended
+- **Optimized database schema** - structured columns with indexes for fast agent queries
+- **Cache management** - in-memory mention tracker with synchronized reset capability
+- **Smart Reset All Data** - clears database AND in-memory cache to ensure consistency
 - Mention tracking with promotion rules
 - Hub-and-spoke architecture
 - Alias detection and updates
@@ -382,16 +465,149 @@ The Archivist creates these typed edges between entities:
 - Signal scoring with exponential recency decay
 - Visibility layer at `/log` for monitoring
 
-**Recent Improvements (2025-10-11)**:
-- Enhanced entity extraction prompt to consolidate values/goals (avoids creating 17 entities from one bio text)
-- Added immediate promotion for high-value types (core_identity, decision, project, company)
-- Added spoke creation filter to prevent redundant reflection entities for core identity documents
-- Result: Clean, Mentor-ready knowledge graph with 7 meaningful entities instead of 17 redundant ones
-
 **Known Limitations**:
 - Embeddings disabled (Anthropic doesn't provide - using zero vectors)
 - Mention tracker is in-memory (resets on restart, but entities persist via database)
 - Single-user system (hardcoded for Ryan York)
+
+---
+
+## Cache Management
+
+The Archivist maintains an in-memory cache (MentionTracker) that tracks entity mentions across events. This cache is critical for entity promotion logic but can cause issues if not properly synchronized with the database.
+
+### In-Memory Cache
+
+**Purpose**: Tracks how many times entities are mentioned to determine when they should be promoted from metadata tags to full entities.
+
+**Structure**:
+```python
+mention_cache = {
+    "entity-name": {
+        "mention_count": 3,
+        "events": ["uuid-1", "uuid-2", "uuid-3"],
+        "is_promoted": True,
+        "entity_id": "uuid-entity"
+    }
+}
+```
+
+**Lifecycle**:
+- Created when ai-core service starts
+- Persists for the life of the service process
+- **Resets when service restarts**
+- **Can be manually cleared via `/reset-cache` endpoint**
+
+### Reset All Data Functionality
+
+When you click the "Reset All Data" button in the Activity Log UI, the system performs a coordinated reset:
+
+**Step 1**: Delete all Archivist data from database (entities, edges, chunks, embeddings, signals, raw_events)
+
+**Step 2**: Clear the in-memory cache by calling `http://127.0.0.1:8000/reset-cache`
+
+**Step 3**: Return success status
+
+**Why Both Steps Are Needed**:
+- Database deletion alone leaves stale entity IDs in the cache
+- Subsequent entity lookups will return HTTP 406 errors (entity doesn't exist)
+- This causes foreign key constraint violations when creating edges
+- Result: Partial data extraction with missing relationships
+
+**Implementation**:
+- Web API: `/api/archivist-reset` (route.ts)
+- Python API: `/reset-cache` endpoint (main.py)
+- Archivist method: `clear_cache()` (agents/archivist.py)
+
+**Code**:
+```python
+# apps/ai-core/agents/archivist.py
+def clear_cache(self) -> None:
+    """Clear all in-memory caches (called after database reset)"""
+    logger.info("Clearing Archivist in-memory cache")
+    self.mention_tracker = MentionTracker()  # Reinitialize with empty cache
+    logger.info("Cache cleared successfully")
+```
+
+---
+
+## Troubleshooting
+
+### Common Setup Issues
+
+#### Environment Variables Not Loading
+**Symptom**: Service connects to wrong Supabase URL or shows authentication errors
+
+**Cause**: Multiple `.env` files with conflicting values, or Next.js caching old values
+
+**Solution**:
+1. Check all `.env` files in the monorepo:
+   - `/Users/ryanyork/Software/umg-monorepo/.env.local` (root)
+   - `/Users/ryanyork/Software/umg-monorepo/apps/web/.env.local`
+   - `/Users/ryanyork/Software/umg-monorepo/apps/ai-core/.env`
+2. Ensure all have matching Supabase credentials
+3. Delete `.next` folder: `rm -rf apps/web/.next`
+4. Restart dev server: `pnpm dev:web`
+
+#### Schema Mismatches
+**Symptom**: Errors like "Could not find the 'hash' column" or "Could not find 'vec' column"
+
+**Cause**: Database schema doesn't match code expectations (common after migrations)
+
+**Known Schema Issues**:
+- Chunk table: Code expects `hash` (not `content_hash`), `text` (not `content`), `token_count` column
+- Embedding table: Code expects `vec` (not `vector`)
+
+**Solution**: Run schema fixes in Supabase SQL Editor:
+```sql
+-- Fix chunk table
+ALTER TABLE chunk RENAME COLUMN content_hash TO hash;
+ALTER TABLE chunk RENAME COLUMN content TO text;
+ALTER TABLE chunk ADD COLUMN IF NOT EXISTS token_count INTEGER NOT NULL DEFAULT 0;
+
+-- Fix embedding table
+ALTER TABLE embedding RENAME COLUMN vector TO vec;
+```
+
+#### Reset All Data Doesn't Clear Everything
+**Symptom**: After clicking "Reset All Data", subsequent event processing shows HTTP 406 errors or missing entities
+
+**Cause**: In-memory cache not cleared (only database was reset)
+
+**Solution**: This should not happen if you're on the latest code. If it does:
+1. Verify the web API calls `/reset-cache`: Check browser network tab
+2. Verify ai-core service is running: `curl http://127.0.0.1:8000/health`
+3. Manually restart ai-core service as a workaround
+4. Check logs for errors in cache reset call
+
+#### Entities Not Being Created
+**Symptom**: Raw events processed but no entities/edges in database
+
+**Cause 1**: Row Level Security (RLS) blocking inserts
+
+**Solution**: Disable RLS for development:
+```sql
+ALTER TABLE entity DISABLE ROW LEVEL SECURITY;
+ALTER TABLE edge DISABLE ROW LEVEL SECURITY;
+ALTER TABLE chunk DISABLE ROW LEVEL SECURITY;
+ALTER TABLE embedding DISABLE ROW LEVEL SECURITY;
+ALTER TABLE signal DISABLE ROW LEVEL SECURITY;
+```
+
+**Cause 2**: Entity extraction returning empty results
+
+**Solution**: Check ai-core logs for Claude API errors or invalid JSON parsing
+
+#### Foreign Key Constraint Violations
+**Symptom**: Errors like "violates foreign key constraint" when creating chunks or edges
+
+**Cause**: Entity creation failed silently but processing continued
+
+**Solution**:
+1. Check that entity IDs are being returned correctly
+2. Verify entities exist in database: `SELECT * FROM entity WHERE id = 'uuid'`
+3. Check ai-core logs for entity creation errors
+4. Ensure cache is synchronized (run Reset All Data)
 
 ---
 
@@ -406,58 +622,73 @@ The Archivist creates these typed edges between entities:
 
 ---
 
-## Design Philosophy: Quality Over Quantity
+## Design Philosophy: Completeness Based on Salience
 
 ### The Problem We Solved
 
-**Before (naive extraction)**:
-- Extract every concept mentioned → 17 entities from one bio text
-- Separate entities for "Innovation", "Independence", "Continuous Learning"
-- Separate entities for "Tackle water crisis", "Ensure water access", "Build WaterOS to escape velocity"
-- Create reflection spoke duplicating all extracted information
-- Result: **Cluttered graph, redundant data, Mentor overwhelmed with similar entities**
+**Before (with content-type branching and arbitrary limits)**:
+- Resume data treated as "reference material" → only 1-3 entities extracted
+- Biographical text forced into "3-5 values, 1-3 goals" quotas → artificial consolidation
+- Organizations, roles, skills, milestones ignored
+- No temporal data on relationships
+- Result: **Incomplete graph, missing critical career/biographical data**
 
-**After (intelligent extraction)**:
-- Consolidate overlapping values → "Innovation and Independence" (merged)
-- Extract primary goals, not sub-goals → "Tackle the global water crisis" (includes water access)
-- Extract success definition, not implementation details → "Build self-sustaining engine at scale" (includes escape velocity + empire)
-- Skip reflection spoke for core identity documents (extracted entities ARE the memory)
-- Result: **7 clean entities, each serving a distinct purpose, Mentor has exactly what it needs**
+**After (salience-based extraction, no limits)**:
+- Resume data fully extracted → all organizations, roles, skills, milestones with dates
+- Biographical text extracts ALL salient values/goals (no quotas)
+- Only consolidates concepts that are ACTUALLY THE SAME thing
+- Temporal relationships capture career timeline
+- Result: **Complete graph with all salient entities, ready for agent queries**
 
-### Why This Matters for the Mentor Agent
+### Examples of What's Now Possible
 
-The Mentor's job is to:
-1. **Detect goal alignment/drift** → Needs your primary goals, not sub-goals
-2. **Challenge assumptions** → Needs your values proven through action (decision entities)
-3. **Connect past to present** → Needs clean relationships without noise
-
-**Example of what's now possible**:
-
-```
-Mentor Delta Watch (daily digest):
-"Your stated mission: Tackle the global water crisis
-Your stated values: Impact rooted in Equity
-Your recent work: 80% Willow features, 20% WaterOS fundraising
-
-Question: Your commitment to equity was proven when you exposed a company
-failure to protect vulnerable populations (Decision entity from 3 months ago).
-Does this week's work allocation align with that same equity commitment, or
-are you drifting toward what's comfortable rather than what's impactful?"
+**Career Timeline Queries:**
+```sql
+-- "What was Ryan doing in 2015?"
+SELECT e.title, r.description, r.start_date, r.end_date
+FROM entity e
+JOIN edge r ON r.to_id = e.id
+WHERE r.from_id = 'ryan-york-id'
+  AND r.start_date <= '2015-12-31'
+  AND (r.end_date IS NULL OR r.end_date >= '2015-01-01')
+ORDER BY r.start_date;
 ```
 
-**This query is only possible because**:
-- The mission is consolidated (not split into 3 goal entities)
-- The values are consolidated (not split into 5 value entities)
-- The decision is captured as high-value entity (not buried in a reflection spoke)
-- Relationships connect values → decisions → mission
+**Current Work:**
+```sql
+-- "What is Ryan currently working on?"
+SELECT e.title, r.kind, r.description
+FROM edge r
+JOIN entity e ON e.id = r.to_id
+WHERE r.from_id = 'ryan-york-id'
+  AND r.end_date IS NULL
+  AND r.kind IN ('worked_at', 'founded', 'led');
+```
+
+**Skills Analysis:**
+```sql
+-- "What skills does Ryan have?"
+SELECT title, summary FROM entity
+WHERE type = 'skill'
+ORDER BY created_at DESC;
+```
+
+### Why This Matters for Agents
+
+Agents can now:
+1. **Build career timelines** → Complete work history with dates and roles
+2. **Analyze skill evolution** → Track when skills were acquired/used
+3. **Query temporal context** → "What was I working on when I learned X?"
+4. **Detect patterns** → Career trajectory, role progression, skill gaps
+5. **Make connections** → "You solved a similar problem at RePublic Schools in 2016"
 
 ### The Trade-Off
 
-**We chose**: Consolidation over granularity
-**We accept**: Some nuance lost (e.g., "Continuous Learning" merged into broader values)
-**We gain**: Mentor can reason about your goals/values without getting lost in 17 similar entities
+**We chose**: Completeness over consolidation
+**We accept**: More entities in the graph (but all meaningful)
+**We gain**: Agents can query complete biographical/career data with temporal precision
 
-**The principle**: The Archivist exists to serve the Mentor. If extracting more entities makes the Mentor less effective at coaching you, we extract fewer entities.
+**The principle**: The Archivist captures ALL salient information. Agents decide what's relevant for their specific tasks. Better to have complete data than to prematurely consolidate.
 
 ---
 
