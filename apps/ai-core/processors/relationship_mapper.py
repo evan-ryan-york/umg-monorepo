@@ -61,7 +61,17 @@ class RelationshipMapper:
 
                 entity_list.append(entity_str)
 
-            prompt = f"""Given this text and list of entities (including existing ones from the knowledge graph), identify relationships between them.
+            prompt = f"""Given this text and list of entities, identify relationships. Focus on:
+
+1. Work history: person → organization (worked_at, founded, attended)
+2. Major achievements: person → milestone (achieved) - ONLY top accomplishments
+3. Skills: person → skill (manages) - **CRITICAL: Create manages edge for EVERY skill entity**
+4. Key locations: organization → location (relates_to)
+5. Core identity: person → core_identity (values)
+6. Goals: person → goal (owns)
+
+CRITICAL FOR SKILLS: If a skill entity exists, create a "manages" relationship from person to that skill.
+DO NOT skip any skills. Connect ALL of them.
 
 Text: {text}
 
@@ -71,33 +81,113 @@ Entities (new + existing from knowledge graph):
 IMPORTANT: Pay attention to pronouns like "I", "me", "my" which may refer to existing entities. These are shown in [also referred to as: ...] hints.
 
 For each relationship, specify:
-- from_entity: The source entity title (must match exactly from the list above)
-- to_entity: The destination entity title (must match exactly from the list above)
-- relationship_type: One of [belongs_to, modifies, mentions, informs, blocks, contradicts, relates_to, founded, works_at, manages, owns, contributes_to]
-- metadata: Any relevant context as a JSON object
+- from_entity: Source entity title (must match exactly from list above)
+- to_entity: Destination entity title (must match exactly from list above)
+- relationship_type: One of the supported types below
+- start_date: When relationship began (YYYY-MM-DD format, or null if unknown)
+- end_date: When relationship ended (YYYY-MM-DD format, or null if ongoing/unknown)
+- description: Brief context (e.g., "Principal", "Co-founder", "Renamed from X to Y")
+- confidence: How confident you are (0.0 to 1.0)
+- importance: How important this relationship is (0.0 to 1.0, or null)
 
-Relationship type meanings:
-- belongs_to: Hierarchical ownership (e.g., Feature belongs_to Project)
-- modifies: Changes or updates (e.g., Meeting modifies Feature via rename)
-- mentions: Simple reference (e.g., Note mentions Person)
-- informs: Knowledge transfer (e.g., Research informs Decision)
-- blocks: Dependencies (e.g., Task blocks another Task)
-- contradicts: Tensions (e.g., Decision contradicts previous Strategy)
-- relates_to: General connection (e.g., Spoke relates_to Hub)
-- founded: Person founded/started a company or project
-- works_at: Person works at a company
-- manages: Person manages a project or team
-- owns: Person/entity owns or is responsible for something
-- contributes_to: Person contributes to a project
+SUPPORTED RELATIONSHIP TYPES:
 
-Return ONLY a JSON object with a "relationships" array:
+**Work & Career:**
+- worked_at: Employment (person → organization). Extract role in description. Use start_date/end_date.
+- attended: Education (person → organization). Extract degree in description. Use start_date/end_date.
+- founded: Created organization (person → organization). Use start_date, usually no end_date.
+- led: Leadership role (person → organization/project/team). Extract role in description. Use start_date/end_date.
+- participated_in: Project/initiative participation (person → project). Use start_date/end_date.
+
+**Location & Temporal:**
+- lived_in: Residency (person → location). Use start_date/end_date.
+
+**Knowledge & Learning:**
+- learned_from: Knowledge source (person → source). Use start_date if applicable.
+- achieved: Milestone reached (person → milestone). Use start_date for when achieved.
+
+**Hierarchical & Structural:**
+- belongs_to: Hierarchical ownership (e.g., product belongs_to project)
+- modifies: Changes/updates (e.g., meeting modifies product via rename)
+- mentions: Simple reference (e.g., note mentions person)
+- informs: Knowledge transfer (e.g., research informs decision)
+
+**Dependencies & Conflicts:**
+- blocks: Dependencies (e.g., task blocks another task)
+- contradicts: Tensions (e.g., decision contradicts previous strategy)
+
+**General & Identity:**
+- relates_to: General connection (e.g., spoke relates_to hub)
+- values: Identity relationship (person values core_identity)
+- owns: Ownership/responsibility (person owns goal/project)
+- manages: Management (person manages team/project)
+- contributes_to: Contribution (person contributes_to project)
+
+TEMPORAL EXTRACTION GUIDELINES:
+- "Jan 2024 - Current" → start_date: "2024-01-01", end_date: null
+- "2015-2016" → start_date: "2015-01-01", end_date: "2016-12-31"
+- "May 2018 - Dec 2023" → start_date: "2018-05-01", end_date: "2023-12-31"
+- "Aug 2017 - May 2018" → start_date: "2017-08-01", end_date: "2018-05-31"
+- If no dates mentioned → start_date: null, end_date: null
+
+Return ONLY a JSON object:
 {{
   "relationships": [
     {{
       "from_entity": "entity name",
       "to_entity": "entity name",
+      "relationship_type": "worked_at",
+      "start_date": "2024-01-01",
+      "end_date": null,
+      "description": "Chief Technology Officer",
+      "confidence": 0.95,
+      "importance": 0.85
+    }}
+  ]
+}}
+
+EXAMPLES:
+
+Input: "Ryan York was CTO at Willow Education from Jan 2024 to Current"
+Output:
+{{
+  "relationships": [
+    {{
+      "from_entity": "Ryan York",
+      "to_entity": "Willow Education",
+      "relationship_type": "worked_at",
+      "start_date": "2024-01-01",
+      "end_date": null,
+      "description": "Chief Technology Officer",
+      "confidence": 0.95,
+      "importance": 0.9
+    }}
+  ]
+}}
+
+Input: "Co-founded The Gathering Place from May 2018 to Dec 2023"
+Output:
+{{
+  "relationships": [
+    {{
+      "from_entity": "Ryan York",
+      "to_entity": "The Gathering Place",
       "relationship_type": "founded",
-      "metadata": {{"context": "additional info"}}
+      "start_date": "2018-05-01",
+      "end_date": "2023-12-31",
+      "description": "Co-Founder",
+      "confidence": 0.95,
+      "importance": 0.95
+    }},
+    {{
+      "from_entity": "Ryan York",
+      "to_entity": "The Gathering Place",
+      "relationship_type": "worked_at",
+      "start_date": "2018-05-01",
+      "end_date": "2023-12-31",
+      "description": "Co-CEO",
+      "confidence": 0.95,
+      "importance": 0.9
     }}
   ]
 }}
@@ -106,7 +196,7 @@ If no relationships exist, return {{"relationships": []}}"""
 
             response = self.client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=2048,
+                max_tokens=8192,  # Increased to handle large resumes with many relationships
                 temperature=0.3,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -119,14 +209,29 @@ If no relationships exist, return {{"relationships": []}}"""
                 content = "\n".join(lines[1:-1]) if len(lines) > 2 else content
                 content = content.replace("```json", "").replace("```", "").strip()
 
+            # Handle truncated JSON by closing any incomplete structures
+            if not content.rstrip().endswith('}'):
+                logger.warning("Response appears truncated, attempting to close JSON structure")
+                # Find the last complete relationship by finding the last complete }
+                last_complete = content.rfind('},')
+                if last_complete > 0:
+                    # Truncate to last complete relationship and close the JSON
+                    content = content[:last_complete + 1] + '\n  ]\n}'
+                    logger.info(f"Salvaged truncated response, will process partial relationships")
+
             result = json.loads(content)
             relationships = result.get('relationships', [])
 
             logger.info(f"Detected {len(relationships)} relationships via LLM")
             return relationships
 
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error: {e}")
+            logger.error(f"Full raw Claude response that failed to parse:")
+            logger.error(content)  # Log the FULL response
+            return []
         except Exception as e:
-            logger.error(f"Error detecting relationships with LLM: {str(e)}")
+            logger.error(f"Error detecting relationships with LLM: {str(e)}", exc_info=True)
             return []
 
     def detect_explicit_relationships(self, text: str) -> List[Dict]:
@@ -274,7 +379,8 @@ If no relationships exist, return {{"relationships": []}}"""
         """Create an edge in the database from a detected relationship
 
         Args:
-            relationship: Relationship dict with from_entity, to_entity, relationship_type
+            relationship: Relationship dict with from_entity, to_entity, relationship_type,
+                         start_date, end_date, description, confidence, importance
             entity_map: Mapping of entity titles to entity IDs
             db: Database service instance
             source_event_id: Optional ID of the event that created this relationship
@@ -303,15 +409,47 @@ If no relationships exist, return {{"relationships": []}}"""
                 'from_id': from_id,
                 'to_id': to_id,
                 'kind': rel_type,
+                'confidence': relationship.get('confidence', 1.0),
                 'metadata': relationship.get('metadata', {})
             }
+
+            # Add structured columns from relationship
+            if 'start_date' in relationship and relationship['start_date']:
+                edge_data['start_date'] = relationship['start_date']
+
+            if 'end_date' in relationship and relationship['end_date']:
+                edge_data['end_date'] = relationship['end_date']
+
+            if 'description' in relationship and relationship['description']:
+                edge_data['description'] = relationship['description']
+
+            if 'importance' in relationship and relationship['importance'] is not None:
+                edge_data['importance'] = relationship['importance']
 
             # Add source_event_id if provided
             if source_event_id:
                 edge_data['source_event_id'] = source_event_id
 
             db.create_edge(edge_data)
-            logger.info(f"Created edge: {from_title} --{rel_type}--> {to_title}")
+
+            # Build detailed log message with temporal data
+            log_parts = [f"Created edge: {from_title} --{rel_type}--> {to_title}"]
+
+            if relationship.get('description'):
+                log_parts.append(f"description='{relationship.get('description')}'")
+
+            if relationship.get('start_date'):
+                log_parts.append(f"start={relationship.get('start_date')}")
+
+            if relationship.get('end_date'):
+                log_parts.append(f"end={relationship.get('end_date')}")
+            elif 'start_date' in relationship and relationship.get('start_date'):
+                log_parts.append(f"end=ongoing")
+
+            if relationship.get('importance'):
+                log_parts.append(f"importance={relationship.get('importance')}")
+
+            logger.info(" | ".join(log_parts))
             return True
 
         except Exception as e:

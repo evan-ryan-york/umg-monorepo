@@ -7,7 +7,7 @@ from models.embedding import Embedding
 from models.signal import Signal
 from models.insight import Insight
 from models.dismissed_pattern import DismissedPattern
-from models.chat import ChatMessage, ChatContext
+from models.chat import ChatMessage
 from models.entity_with_signal import EntityWithSignal
 from models.entity_relationship import EntityRelationships, EntityRelationshipItem
 
@@ -22,7 +22,6 @@ __all__ = [
     "Insight",
     "DismissedPattern",
     "ChatMessage",
-    "ChatContext",
     "EntityWithSignal",
     "EntityRelationships",
     "EntityRelationshipItem",

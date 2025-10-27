@@ -23,124 +23,176 @@ export default async function ArchivistLogPage(): Promise<React.ReactElement> {
     // Fetch 10 most recent processed events
     const { data: rawEvents, error: eventsError } = await supabase
       .from('raw_events')
-      .select('*')
+      .select('id, payload, source, status, created_at')
       .eq('status', 'processed')
       .order('created_at', { ascending: false })
       .limit(10);
 
     if (eventsError) {
-      console.error('Error fetching raw events:', eventsError);
       error = 'Failed to fetch raw events';
-    } else if (rawEvents) {
-      // For each event, gather all related data
+    } else if (rawEvents && rawEvents.length > 0) {
+      // For each event, gather all related data in parallel
       logs = await Promise.all(
-        rawEvents.map(async (event: RawEvent) => {
+        rawEvents.map(async (event) => {
           // Fetch entities created by this event
           const { data: entities } = await supabase
             .from('entity')
             .select('id, title, type, summary')
             .eq('source_event_id', event.id);
 
-          const createdEntities = entities || [];
+          const createdEntities: Array<{
+            id: string;
+            title: string;
+            type: string;
+            summary: string;
+          }> = [];
+
+          if (entities) {
+            for (const e of entities) {
+              createdEntities.push({
+                id: String(e.id),
+                title: String(e.title || ''),
+                type: String(e.type),
+                summary: String(e.summary || ''),
+              });
+            }
+          }
+
           const entityIds = createdEntities.map((e) => e.id);
 
-          // Fetch edges created by this event (not all edges involving these entities)
-          let createdEdges: ArchivistLogEntry['createdEdges'] = [];
-          const { data: edges } = await supabase
-            .from('edge')
-            .select('id, kind, from_id, to_id')
-            .eq('source_event_id', event.id);
+          // Fetch edges, signals, and chunks in parallel
+          const [edgesResult, signalsResult, chunksResult] = await Promise.all([
+            supabase.from('edge').select('id, kind, from_id, to_id').eq('source_event_id', event.id),
+            entityIds.length > 0
+              ? supabase.from('signal').select('entity_id, importance, recency, novelty').in('entity_id', entityIds)
+              : Promise.resolve({ data: null }),
+            entityIds.length > 0
+              ? supabase.from('chunk').select('id').in('entity_id', entityIds)
+              : Promise.resolve({ data: null }),
+          ]);
 
-          if (edges) {
-            createdEdges = await Promise.all(
-              edges.map(async (edge) => {
-                const { data: fromEntity } = await supabase
-                  .from('entity')
-                  .select('id, title, type')
-                  .eq('id', edge.from_id)
-                  .single();
+          // Process edges
+          const createdEdges: Array<{
+            id: string;
+            fromEntity: { id: string; title: string; type: string };
+            toEntity: { id: string; title: string; type: string };
+            kind: string;
+          }> = [];
 
-                const { data: toEntity } = await supabase
-                  .from('entity')
-                  .select('id, title, type')
-                  .eq('id', edge.to_id)
-                  .single();
+          if (edgesResult.data && edgesResult.data.length > 0) {
+            // Batch fetch all entities needed for edges
+            const edgeEntityIds = new Set<string>();
+            edgesResult.data.forEach(edge => {
+              edgeEntityIds.add(edge.from_id);
+              edgeEntityIds.add(edge.to_id);
+            });
 
-                return {
-                  id: edge.id,
-                  fromEntity: fromEntity || { id: edge.from_id, title: 'Unknown', type: 'unknown' },
-                  toEntity: toEntity || { id: edge.to_id, title: 'Unknown', type: 'unknown' },
-                  kind: edge.kind,
-                };
-              })
-            );
+            const { data: edgeEntities } = await supabase
+              .from('entity')
+              .select('id, title, type')
+              .in('id', Array.from(edgeEntityIds));
+
+            // Create a lookup map
+            const entityMap = new Map<string, { id: string; title: string; type: string }>();
+            if (edgeEntities) {
+              edgeEntities.forEach(ent => {
+                entityMap.set(ent.id, {
+                  id: String(ent.id),
+                  title: String(ent.title || 'Unknown'),
+                  type: String(ent.type || 'unknown'),
+                });
+              });
+            }
+
+            // Build edges using the lookup map
+            edgesResult.data.forEach(edge => {
+              const fromEntity = entityMap.get(edge.from_id) || {
+                id: String(edge.from_id),
+                title: 'Unknown',
+                type: 'unknown',
+              };
+
+              const toEntity = entityMap.get(edge.to_id) || {
+                id: String(edge.to_id),
+                title: 'Unknown',
+                type: 'unknown',
+              };
+
+              createdEdges.push({
+                id: String(edge.id),
+                fromEntity,
+                toEntity,
+                kind: String(edge.kind),
+              });
+            });
           }
 
-          // Fetch signals for these entities
-          let signals: ArchivistLogEntry['signals'] = [];
-          if (entityIds.length > 0) {
-            const { data: signalData } = await supabase
-              .from('signal')
-              .select('entity_id, importance, recency, novelty')
-              .in('entity_id', entityIds);
+          // Process signals
+          const signals: Array<{
+            entity_id: string;
+            importance: number;
+            recency: number;
+            novelty: number;
+          }> = [];
 
-            signals = signalData || [];
+          if (signalsResult.data) {
+            for (const s of signalsResult.data) {
+              signals.push({
+                entity_id: String(s.entity_id),
+                importance: Number(s.importance),
+                recency: Number(s.recency),
+                novelty: Number(s.novelty),
+              });
+            }
           }
 
-          // Count chunks and embeddings
+          // Process chunks and embeddings
           let chunkCount = 0;
           let embeddingCount = 0;
 
-          if (entityIds.length > 0) {
-            const { data: chunks } = await supabase
-              .from('chunk')
-              .select('id')
-              .in('entity_id', entityIds);
+          if (chunksResult.data) {
+            chunkCount = chunksResult.data.length;
 
-            if (chunks) {
-              chunkCount = chunks.length;
+            const chunkIds = chunksResult.data.map((c) => String(c.id));
+            if (chunkIds.length > 0) {
+              const { data: embeddings } = await supabase
+                .from('embedding')
+                .select('chunk_id')
+                .in('chunk_id', chunkIds);
 
-              const chunkIds = chunks.map((c) => c.id);
-              if (chunkIds.length > 0) {
-                const { data: embeddings } = await supabase
-                  .from('embedding')
-                  .select('chunk_id')
-                  .in('chunk_id', chunkIds);
-
-                if (embeddings) {
-                  embeddingCount = embeddings.length;
-                }
+              if (embeddings) {
+                embeddingCount = embeddings.length;
               }
             }
           }
 
-          return {
+          // Construct clean log entry - explicitly typed to ensure no references leak
+          const logEntry: ArchivistLogEntry = {
             rawEvent: {
-              id: event.id,
-              payload: event.payload,
-              source: event.source,
-              status: event.status,
-              created_at: event.created_at,
+              id: String(event.id),
+              payload: {
+                type: String(event.payload?.type || 'text'),
+                content: String(event.payload?.content || ''),
+              },
+              source: String(event.source),
+              status: String(event.status),
+              created_at: String(event.created_at),
             },
-            createdEntities: createdEntities.map((e) => ({
-              id: e.id,
-              title: e.title || '',
-              type: e.type,
-              summary: e.summary || '',
-            })),
+            createdEntities,
             createdEdges,
             summary: {
-              chunkCount,
-              embeddingCount,
+              chunkCount: Number(chunkCount),
+              embeddingCount: Number(embeddingCount),
               signalCount: signals.length,
             },
             signals,
           };
+
+          return logEntry;
         })
       );
     }
   } catch (e) {
-    console.error('Error fetching logs:', e);
     error = 'Error while fetching logs';
   }
 

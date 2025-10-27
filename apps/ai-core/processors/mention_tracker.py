@@ -48,26 +48,45 @@ class MentionTracker:
         Args:
             entity_text: The entity text/title
             is_primary_subject: Whether this entity is the primary subject
-            entity_type: The type of entity (person, core_identity, etc.)
+            entity_type: The type of entity (organization, role, skill, etc.)
 
         Returns:
             bool: True if entity should be promoted to database
-        """
-        # Rule 1: Immediate promotion if entity is primary subject
-        if is_primary_subject:
-            return True
 
-        # Rule 2: Immediate promotion for high-value entity types
-        # These are definitional and should always be captured
+        Promotion Rules:
+        - High-value entity types (organizations, roles, skills, etc.) → promote immediately
+        - Primary subjects → promote immediately
+        - Low-value types (concepts, tasks) → promote after 2+ mentions
+        """
+        # High-value entity types that should always be saved immediately
         high_value_types = [
-            'core_identity',  # Goals, values, mission statements
-            'decision',       # Important decisions
-            'project',        # Projects (usually mentioned once in detail)
-            'company'         # Companies/organizations
+            'organization',   # Companies, schools, nonprofits
+            'role',          # Job titles and positions
+            'skill',         # Technical abilities
+            'milestone',     # Major achievements
+            'location',      # Places
+            'core_identity', # Values, mission, principles
+            'decision',      # Important choices
+            'project',       # Major initiatives
+            'product',       # Things built
+            'goal',          # Objectives
+            'person',        # People (when they're the primary subject or clearly important)
+            'event',         # Significant happenings
+            'source',        # Books, articles, research
+            'team',          # Groups within organizations
+            'company',       # Legacy support (mapped to organization)
         ]
+
+        # Rule 1: Always promote high-value entity types
         if entity_type in high_value_types:
             return True
 
+        # Rule 2: Always promote primary subjects
+        if is_primary_subject:
+            return True
+
+        # Rule 3: For low-value types (meeting_note, reflection, task, concept),
+        # require multiple mentions before promoting
         normalized_key = self._normalize_entity_name(entity_text)
 
         if normalized_key not in self.mention_cache:
@@ -75,14 +94,13 @@ class MentionTracker:
 
         mention = self.mention_cache[normalized_key]
 
-        # Rule 3: Promote after 2-3 mentions across different events
-        # (for lower-value types like tasks, reflections, etc.)
-        if mention["mention_count"] >= 2 and len(mention["events"]) >= 2:
-            return True
-
-        # Rule 4: Don't promote if already promoted
+        # Don't re-promote if already promoted
         if mention["is_promoted"]:
             return False
+
+        # Promote after 2+ mentions across different events
+        if mention["mention_count"] >= 2 and len(mention["events"]) >= 2:
+            return True
 
         return False
 
@@ -103,6 +121,16 @@ class MentionTracker:
             return mention.get("entity_id")
 
         return None
+
+    def get_mention_count(self, entity_text: str) -> int:
+        """Get the mention count for an entity"""
+        normalized_key = self._normalize_entity_name(entity_text)
+        mention = self.mention_cache.get(normalized_key)
+
+        if mention:
+            return mention.get("mention_count", 0)
+
+        return 0
 
     def _normalize_entity_name(self, name: str) -> str:
         """Normalize entity name for comparison"""

@@ -11,7 +11,7 @@ from models.insight import Insight
 from models.dismissed_pattern import DismissedPattern
 from models.entity_with_signal import EntityWithSignal
 from models.entity_relationship import EntityRelationships, EntityRelationshipItem
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import logging
 
 logger = logging.getLogger(__name__)
@@ -62,10 +62,14 @@ class DatabaseService:
 
     def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
         """Get entity by ID"""
-        response = (
-            self.client.table("entity").select("*").eq("id", entity_id).single().execute()
-        )
-        return Entity(**response.data) if response.data else None
+        try:
+            response = (
+                self.client.table("entity").select("*").eq("id", entity_id).maybe_single().execute()
+            )
+            return Entity(**response.data) if response.data else None
+        except Exception as e:
+            logger.error(f"Error getting entity by ID {entity_id}: {e}")
+            return None
 
     def get_entity_by_title(self, title: str, entity_type: Optional[str] = None) -> Optional[Entity]:
         """Get entity by title (case-insensitive), optionally filtered by type"""
@@ -148,6 +152,71 @@ class DatabaseService:
         )
         return (from_count.count or 0) + (to_count.count or 0)
 
+    def get_current_relationships(self, entity_id: str, relationship_type: str = None) -> List[Edge]:
+        """Get active/current relationships for an entity (end_date is NULL or in future)
+
+        Args:
+            entity_id: Entity ID to query
+            relationship_type: Optional filter by relationship type (e.g., 'worked_at')
+
+        Returns:
+            List of Edge objects for current relationships
+        """
+        try:
+            query = (
+                self.client.table("edge")
+                .select("*")
+                .eq("from_id", entity_id)
+                .or_("end_date.is.null,end_date.gte.{}".format(datetime.now().date().isoformat()))
+            )
+
+            if relationship_type:
+                query = query.eq("kind", relationship_type)
+
+            response = query.execute()
+            return [Edge(**edge) for edge in response.data] if response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching current relationships: {e}")
+            return []
+
+    def get_relationships_in_timeframe(
+        self,
+        entity_id: str,
+        start_date: date = None,
+        end_date: date = None,
+        relationship_type: str = None
+    ) -> List[Edge]:
+        """Get relationships that were active during a specific timeframe
+
+        Args:
+            entity_id: Entity ID to query
+            start_date: Start of timeframe (optional)
+            end_date: End of timeframe (optional)
+            relationship_type: Optional filter by relationship type
+
+        Returns:
+            List of Edge objects active during the timeframe
+        """
+        try:
+            query = self.client.table("edge").select("*").eq("from_id", entity_id)
+
+            if start_date:
+                # Relationship must have started before or during the timeframe
+                query = query.or_("start_date.is.null,start_date.lte.{}".format(start_date.isoformat()))
+
+            if end_date:
+                # Relationship must end after or during the timeframe (or be ongoing)
+                query = query.or_("end_date.is.null,end_date.gte.{}".format(end_date.isoformat()))
+
+            if relationship_type:
+                query = query.eq("kind", relationship_type)
+
+            response = query.execute()
+            return [Edge(**edge) for edge in response.data] if response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching relationships in timeframe: {e}")
+            return []
+
     # Chunks
     def create_chunk(self, chunk_data: dict) -> str:
         """Create chunk, return ID"""
@@ -176,7 +245,10 @@ class DatabaseService:
     # Signals
     def create_signal(self, signal_data: dict):
         """Create or update signal for entity (upsert)"""
-        self.client.table("signal").upsert(signal_data).execute()
+        self.client.table("signal").upsert(
+            signal_data,
+            on_conflict="entity_id"  # Use entity_id for conflict detection instead of primary key
+        ).execute()
 
     def get_signal_by_entity_id(self, entity_id: str) -> Optional[Signal]:
         """Get signal for entity"""

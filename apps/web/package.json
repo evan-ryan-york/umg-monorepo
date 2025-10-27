@@ -4,8 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"next dev --turbopack --port 3110\" \"cd ../ai-core && ../../venv/bin/uvicorn main:app --reload --port 8000\"",
-    "dev:next": "next dev --turbopack --port 3110",
+    "dev": "next dev --turbopack --port 3110",
+    "dev:with-ai": "concurrently \"next dev --turbopack --port 3110\" \"cd ../ai-core && ../../venv/bin/uvicorn main:app --reload --port 8000\"",
     "build": "next build",
     "start": "next start",
     "lint": "next lint --max-warnings 0",

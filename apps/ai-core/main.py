@@ -42,6 +42,28 @@ async def health_check():
     }
 
 
+@app.post("/reset-cache")
+async def reset_cache():
+    """Clear the Archivist's in-memory cache
+
+    This should be called after database reset to ensure
+    the cache is in sync with the database state.
+
+    Returns:
+        Success status
+    """
+    try:
+        logger.info("Cache reset requested via API")
+        archivist.clear_cache()
+        return {
+            "status": "success",
+            "message": "Archivist cache cleared successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error clearing cache: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/process")
 async def trigger_processing(batch_size: int = 10):
     """Manually trigger Archivist processing

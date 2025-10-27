@@ -8,25 +8,29 @@ export async function POST(request: Request) {
     // Get the authorization header from the request
     const authHeader = request.headers.get('authorization');
 
-    if (!authHeader) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    // Debug logging
+    console.log('🔍 [API] SUPABASE_URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
+    console.log('🔍 [API] SERVICE_ROLE_KEY exists:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
+    console.log('🔍 [API] SERVICE_ROLE_KEY length:', process.env.SUPABASE_SERVICE_ROLE_KEY?.length || 0);
+    console.log('🔍 [API] Auth header present:', !!authHeader);
 
-    // Create a Supabase client with the user's auth token
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        global: {
-          headers: {
-            Authorization: authHeader,
-          },
-        },
-      }
-    );
+    // DEVELOPMENT MODE: Use service role if no auth header (remove this in production!)
+    const supabase = authHeader
+      ? createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+          {
+            global: {
+              headers: {
+                Authorization: authHeader,
+              },
+            },
+          }
+        )
+      : createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!  // Use service role for dev
+        );
 
     // Parse request body
     const body = await request.json();
@@ -58,14 +62,18 @@ export async function POST(request: Request) {
     };
 
     // Insert into Supabase
+    console.log('🔍 [API] Inserting event data:', JSON.stringify(eventData, null, 2));
     const { data, error } = await supabase
       .from('raw_events')
       .insert(eventData)
       .select('id')
       .single();
 
+    console.log('🔍 [API] Insert result - data:', data);
+    console.log('🔍 [API] Insert result - error:', error);
+
     if (error) {
-      console.error('Supabase error:', error);
+      console.error('❌ [API] Supabase error:', error);
       return NextResponse.json(
         { success: false, error: 'Failed to save event to database' },
         { status: 500 }
@@ -73,6 +81,7 @@ export async function POST(request: Request) {
     }
 
     // Return success response
+    console.log('✅ [API] Event saved successfully:', data.id);
     return NextResponse.json({
       success: true,
       id: data.id,

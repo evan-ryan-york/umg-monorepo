@@ -946,9 +946,9 @@ CREATE INDEX idx_edge_source_event_id ON edge(source_event_id);
 CREATE TABLE chunk (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   entity_id UUID REFERENCES entity(id) ON DELETE CASCADE,
-  text TEXT NOT NULL,
-  token_count INTEGER NOT NULL,
-  hash TEXT NOT NULL UNIQUE,         -- SHA-256 for deduplication
+  text TEXT NOT NULL,                -- Renamed from 'content'
+  token_count INTEGER NOT NULL,      -- Added for token tracking
+  hash TEXT NOT NULL UNIQUE,         -- SHA-256 for deduplication (renamed from 'content_hash')
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -956,13 +956,18 @@ CREATE INDEX idx_chunk_entity_id ON chunk(entity_id);
 CREATE INDEX idx_chunk_hash ON chunk(hash);
 ```
 
+**Schema Notes**:
+- `text` column (not `content`) - stores the actual chunk text
+- `hash` column (not `content_hash`) - SHA-256 hash for deduplication
+- `token_count` - tracks number of tokens for chunking strategy
+
 ### embedding Table
 
 ```sql
 CREATE TABLE embedding (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   chunk_id UUID REFERENCES chunk(id) ON DELETE CASCADE,
-  vec VECTOR(1536),                  -- pgvector type (currently zero vectors)
+  vec VECTOR(1536),                  -- pgvector type (renamed from 'vector', currently zero vectors)
   model TEXT DEFAULT 'text-embedding-3-small',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -971,6 +976,10 @@ CREATE INDEX idx_embedding_chunk_id ON embedding(chunk_id);
 -- Vector similarity index (when embeddings enabled):
 -- CREATE INDEX idx_embedding_vec ON embedding USING ivfflat (vec vector_cosine_ops);
 ```
+
+**Schema Notes**:
+- `vec` column (not `vector`) - pgvector VECTOR(1536) type for embeddings
+- Currently stores zero vectors as embeddings are disabled (Anthropic doesn't provide embedding API)
 
 ### signal Table
 
@@ -1059,6 +1068,32 @@ Get service status and configuration.
 }
 ```
 
+#### POST /reset-cache
+Clear the Archivist's in-memory cache (MentionTracker).
+
+**When to Use**:
+- After database reset operations
+- When experiencing HTTP 406 errors for entities
+- To synchronize cache with database state
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "Archivist cache cleared successfully"
+}
+```
+
+**Error Response**:
+```json
+{
+  "status": "error",
+  "detail": "Error message here"
+}
+```
+
+**Important**: This endpoint is automatically called by the `/api/archivist-reset` route when you click "Reset All Data" in the UI. You typically don't need to call it manually.
+
 ### Next.js API Routes
 
 **Base URL**: `http://localhost:3110/api`
@@ -1110,13 +1145,26 @@ Get 10 most recent processed events with full details.
 ```
 
 #### POST /archivist-reset
-Delete all Archivist data (for testing).
+Delete all Archivist data AND clear in-memory cache (for testing).
+
+**What It Does**:
+1. Deletes all data from database (entities, edges, chunks, embeddings, signals, raw_events)
+2. Calls ai-core `/reset-cache` endpoint to clear in-memory MentionTracker
+3. Returns success status
 
 **Response**:
 ```json
 {
   "success": true,
-  "message": "All Archivist data has been reset"
+  "message": "All Archivist data cleared successfully"
+}
+```
+
+**Error Response**:
+```json
+{
+  "success": false,
+  "error": "Failed to reset Archivist data"
 }
 ```
 
@@ -1452,6 +1500,24 @@ logger.debug(f"Reference map: {reference_map}")
 logger.debug(f"Existing entities: {existing_entities}")
 ```
 
+#### 2.5. HTTP 406 Errors After Database Reset
+**Symptom**: Entity lookups return HTTP 406 "Not Acceptable" after clicking Reset All Data
+
+**Cause**: In-memory cache has stale entity IDs from before database reset
+
+**Impact**:
+- Foreign key constraint violations when creating edges
+- Partial data extraction (entities created but no relationships)
+- Missing chunks and embeddings
+
+**Solution**: Ensure Reset All Data clears both database AND cache
+1. Verify `/api/archivist-reset` calls `/reset-cache` endpoint
+2. Check browser network tab for successful cache clear
+3. If issue persists, manually restart ai-core service
+4. Check that Archivist has `clear_cache()` method implemented
+
+**Prevention**: Always use the Reset All Data button instead of manually deleting database records
+
 #### 3. Chunks/Embeddings Fail
 **Symptom**: Foreign key constraint violations
 
@@ -1520,6 +1586,6 @@ Query with filter:
 
 ---
 
-**Last Updated**: 2025-10-08
+**Last Updated**: 2025-10-26
 **Status**: Production-ready
 **Version**: 1.0
