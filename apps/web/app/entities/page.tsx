@@ -74,6 +74,7 @@ export default function EntitiesPage(): React.JSX.Element {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const graphRef = useRef<any>(null);
 
   const loadData = useCallback(async () => {
@@ -221,38 +222,55 @@ export default function EntitiesPage(): React.JSX.Element {
               graphData={graphData}
               nodeLabel="name"
               nodeAutoColorBy="type"
-              // Force simulation parameters for much better spacing
-              d3AlphaDecay={0.01}
-              d3VelocityDecay={0.2}
-              cooldownTicks={300}
-              linkDistance={200}
-              chargeStrength={-400}
+              // Force simulation parameters
+              d3AlphaDecay={0.015}
+              d3VelocityDecay={0.4}
+              cooldownTicks={100}
+              linkDistance={80}
+              chargeStrength={-300}
+              warmupTicks={100}
+              onEngineStop={() => {
+                // Auto-zoom to fit after initial layout
+                if (graphRef.current) {
+                  graphRef.current.zoomToFit(400, 100);
+                }
+              }}
               nodeCanvasObject={(node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+                const isSelected = selectedNode?.id === node.id;
+                const isHovered = hoveredNode?.id === node.id;
+
                 // Draw node circle
                 ctx.beginPath();
                 ctx.arc(node.x, node.y, node.val, 0, 2 * Math.PI, false);
                 ctx.fillStyle = node.color;
                 ctx.fill();
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 1.5 / globalScale;
+
+                // Highlight selected/hovered
+                ctx.strokeStyle = isSelected ? '#1e40af' : (isHovered ? '#60a5fa' : '#fff');
+                ctx.lineWidth = isSelected ? 2.5 / globalScale : 1.5 / globalScale;
                 ctx.stroke();
 
-                // Only show labels when zoomed in enough or for selected node
-                const isSelected = selectedNode?.id === node.id;
-                const shouldShowLabel = globalScale > 0.8 || isSelected;
-
-                if (shouldShowLabel) {
+                // Only show label for selected or hovered node
+                if (isSelected || isHovered) {
                   const label = node.name;
-                  const fontSize = Math.max(12 / globalScale, 10);
+                  const fontSize = 14 / globalScale;
                   ctx.font = `${isSelected ? 'bold ' : ''}${fontSize}px Sans-Serif`;
                   const textWidth = ctx.measureText(label).width;
-                  const bckgDimensions = [textWidth, fontSize].map(n => n + fontSize * 0.4);
+                  const bckgDimensions = [textWidth, fontSize].map(n => n + fontSize * 0.5);
 
                   // Draw label background
-                  ctx.fillStyle = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.8)';
+                  ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+                  ctx.strokeStyle = isSelected ? '#1e40af' : '#cbd5e1';
+                  ctx.lineWidth = 1 / globalScale;
                   ctx.fillRect(
                     node.x - bckgDimensions[0] / 2,
-                    node.y + node.val + 2,
+                    node.y + node.val + 4,
+                    bckgDimensions[0],
+                    bckgDimensions[1]
+                  );
+                  ctx.strokeRect(
+                    node.x - bckgDimensions[0] / 2,
+                    node.y + node.val + 4,
                     bckgDimensions[0],
                     bckgDimensions[1]
                   );
@@ -261,9 +279,10 @@ export default function EntitiesPage(): React.JSX.Element {
                   ctx.textAlign = 'center';
                   ctx.textBaseline = 'middle';
                   ctx.fillStyle = isSelected ? '#1e40af' : '#1f2937';
-                  ctx.fillText(label, node.x, node.y + node.val + 2 + bckgDimensions[1] / 2);
+                  ctx.fillText(label, node.x, node.y + node.val + 4 + bckgDimensions[1] / 2);
                 }
               }}
+              onNodeHover={(node) => setHoveredNode(node as GraphNode | null)}
               linkLabel="label"
               linkColor={() => '#cbd5e1'}
               linkWidth={(link: any) => (link.importance || 1) * 1.5}
@@ -327,10 +346,11 @@ export default function EntitiesPage(): React.JSX.Element {
                   <strong>Tips:</strong>
                 </p>
                 <ul className="text-xs text-blue-800 space-y-1 list-disc list-inside">
-                  <li>Click a node to see details</li>
+                  <li><strong>Hover over nodes to see labels</strong></li>
+                  <li>Click to select and view details</li>
                   <li>Drag nodes to rearrange</li>
-                  <li>Scroll to zoom in/out</li>
-                  <li><strong>Zoom in to reveal labels</strong></li>
+                  <li>Scroll to zoom, drag canvas to pan</li>
+                  <li>Use "Fit View" button to reset</li>
                 </ul>
               </div>
             </div>
