@@ -92,15 +92,39 @@ export default function EntitiesPage(): React.JSX.Element {
       setEntities(data.entities || []);
       setEdges(data.edges || []);
 
+      // Find Ryan York's entity ID
+      const ryanYorkEntity = (data.entities || []).find((e: Entity) =>
+        e.title.toLowerCase().includes('ryan york')
+      );
+      const ryanYorkId = ryanYorkEntity?.id;
+
+      // Calculate connection count for each entity (excluding Ryan York connections)
+      const connectionCounts = new Map<string, number>();
+      (data.edges || []).forEach((edge: Edge) => {
+        // Skip edges connected to Ryan York
+        if (edge.from_id === ryanYorkId || edge.to_id === ryanYorkId) {
+          return;
+        }
+
+        connectionCounts.set(edge.from_id, (connectionCounts.get(edge.from_id) || 0) + 1);
+        connectionCounts.set(edge.to_id, (connectionCounts.get(edge.to_id) || 0) + 1);
+      });
+
       // Transform data for force graph
-      const nodes: GraphNode[] = (data.entities || []).map((entity: Entity) => ({
-        id: entity.id,
-        name: entity.title,
-        type: entity.type,
-        summary: entity.summary,
-        val: 5, // Node size - could be based on importance/connections
-        color: TYPE_COLORS[entity.type] || TYPE_COLORS.default,
-      }));
+      const nodes: GraphNode[] = (data.entities || []).map((entity: Entity) => {
+        const connections = connectionCounts.get(entity.id) || 0;
+        // Scale node size: base 3, add 1 per connection, max 15
+        const nodeSize = Math.min(3 + connections * 0.8, 15);
+
+        return {
+          id: entity.id,
+          name: entity.title,
+          type: entity.type,
+          summary: entity.summary,
+          val: nodeSize,
+          color: TYPE_COLORS[entity.type] || TYPE_COLORS.default,
+        };
+      });
 
       const links: GraphLink[] = (data.edges || []).map((edge: Edge) => ({
         source: edge.from_id,
@@ -197,6 +221,12 @@ export default function EntitiesPage(): React.JSX.Element {
               graphData={graphData}
               nodeLabel="name"
               nodeAutoColorBy="type"
+              // Force simulation parameters for better spacing
+              d3AlphaDecay={0.02}
+              d3VelocityDecay={0.3}
+              cooldownTicks={200}
+              linkDistance={100}
+              chargeStrength={-150}
               nodeCanvasObject={(node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
                 const label = node.name;
                 const fontSize = 12 / globalScale;
@@ -234,8 +264,6 @@ export default function EntitiesPage(): React.JSX.Element {
               linkDirectionalParticles={2}
               linkDirectionalParticleWidth={2}
               onNodeClick={handleNodeClick}
-              cooldownTicks={100}
-              d3VelocityDecay={0.3}
             />
           )}
         </div>
