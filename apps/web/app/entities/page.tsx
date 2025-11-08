@@ -221,19 +221,13 @@ export default function EntitiesPage(): React.JSX.Element {
               graphData={graphData}
               nodeLabel="name"
               nodeAutoColorBy="type"
-              // Force simulation parameters for better spacing
-              d3AlphaDecay={0.02}
-              d3VelocityDecay={0.3}
-              cooldownTicks={200}
-              linkDistance={100}
-              chargeStrength={-150}
+              // Force simulation parameters for much better spacing
+              d3AlphaDecay={0.01}
+              d3VelocityDecay={0.2}
+              cooldownTicks={300}
+              linkDistance={200}
+              chargeStrength={-400}
               nodeCanvasObject={(node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
-                const label = node.name;
-                const fontSize = 12 / globalScale;
-                ctx.font = `${fontSize}px Sans-Serif`;
-                const textWidth = ctx.measureText(label).width;
-                const bckgDimensions = [textWidth, fontSize].map(n => n + fontSize * 0.4);
-
                 // Draw node circle
                 ctx.beginPath();
                 ctx.arc(node.x, node.y, node.val, 0, 2 * Math.PI, false);
@@ -243,20 +237,32 @@ export default function EntitiesPage(): React.JSX.Element {
                 ctx.lineWidth = 1.5 / globalScale;
                 ctx.stroke();
 
-                // Draw label background
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-                ctx.fillRect(
-                  node.x - bckgDimensions[0] / 2,
-                  node.y + node.val + 2,
-                  bckgDimensions[0],
-                  bckgDimensions[1]
-                );
+                // Only show labels when zoomed in enough or for selected node
+                const isSelected = selectedNode?.id === node.id;
+                const shouldShowLabel = globalScale > 0.8 || isSelected;
 
-                // Draw label text
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillStyle = '#1f2937';
-                ctx.fillText(label, node.x, node.y + node.val + 2 + bckgDimensions[1] / 2);
+                if (shouldShowLabel) {
+                  const label = node.name;
+                  const fontSize = Math.max(12 / globalScale, 10);
+                  ctx.font = `${isSelected ? 'bold ' : ''}${fontSize}px Sans-Serif`;
+                  const textWidth = ctx.measureText(label).width;
+                  const bckgDimensions = [textWidth, fontSize].map(n => n + fontSize * 0.4);
+
+                  // Draw label background
+                  ctx.fillStyle = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.8)';
+                  ctx.fillRect(
+                    node.x - bckgDimensions[0] / 2,
+                    node.y + node.val + 2,
+                    bckgDimensions[0],
+                    bckgDimensions[1]
+                  );
+
+                  // Draw label text
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'middle';
+                  ctx.fillStyle = isSelected ? '#1e40af' : '#1f2937';
+                  ctx.fillText(label, node.x, node.y + node.val + 2 + bckgDimensions[1] / 2);
+                }
               }}
               linkLabel="label"
               linkColor={() => '#cbd5e1'}
@@ -317,9 +323,15 @@ export default function EntitiesPage(): React.JSX.Element {
               </div>
 
               <div className="mt-6 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <p className="text-xs text-blue-800">
-                  <strong>Tip:</strong> Click on a node to see details. Drag nodes to rearrange. Scroll to zoom.
+                <p className="text-xs text-blue-800 mb-2">
+                  <strong>Tips:</strong>
                 </p>
+                <ul className="text-xs text-blue-800 space-y-1 list-disc list-inside">
+                  <li>Click a node to see details</li>
+                  <li>Drag nodes to rearrange</li>
+                  <li>Scroll to zoom in/out</li>
+                  <li><strong>Zoom in to reveal labels</strong></li>
+                </ul>
               </div>
             </div>
           )}
