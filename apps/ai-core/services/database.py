@@ -601,5 +601,106 @@ class DatabaseService:
         """Return current timestamp"""
         return datetime.now()
 
+    # Relationship Engine Methods
+    def get_all_entities(self) -> List[Entity]:
+        """Get all entities in the graph (for full scans)"""
+        try:
+            response = self.client.table("entity").select("*").execute()
+            return [Entity(**e) for e in response.data] if response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching all entities: {e}")
+            return []
+
+    def get_entities_by_event(self, event_id: str) -> List[Entity]:
+        """Get all entities created from a specific event (alias for get_entities_by_source_event)"""
+        return self.get_entities_by_source_event(event_id)
+
+    def get_all_edges(self) -> List[Edge]:
+        """Get all edges in the graph"""
+        try:
+            response = self.client.table("edge").select("*").execute()
+            return [Edge(**e) for e in response.data] if response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching all edges: {e}")
+            return []
+
+    def get_outgoing_edges(self, entity_id: str) -> List[Edge]:
+        """Get all edges originating from an entity"""
+        try:
+            response = (
+                self.client.table("edge")
+                .select("*")
+                .eq("from_id", entity_id)
+                .execute()
+            )
+            return [Edge(**e) for e in response.data] if response.data else []
+        except Exception as e:
+            logger.error(f"Error fetching outgoing edges for {entity_id}: {e}")
+            return []
+
+    def get_edge_by_id(self, edge_id: str) -> Optional[Edge]:
+        """Get edge by ID"""
+        try:
+            response = (
+                self.client.table("edge")
+                .select("*")
+                .eq("id", edge_id)
+                .maybe_single()
+                .execute()
+            )
+            return Edge(**response.data) if response.data else None
+        except Exception as e:
+            logger.error(f"Error getting edge by ID {edge_id}: {e}")
+            return None
+
+    def get_edge_by_from_to_kind(self, from_id: str, to_id: str, kind: str) -> Optional[Edge]:
+        """Check if edge exists between two entities with a specific relationship type"""
+        try:
+            response = (
+                self.client.table("edge")
+                .select("*")
+                .eq("from_id", from_id)
+                .eq("to_id", to_id)
+                .eq("kind", kind)
+                .maybe_single()
+                .execute()
+            )
+            return Edge(**response.data) if response.data else None
+        except Exception as e:
+            logger.error(f"Error checking for edge {from_id} -> {to_id} ({kind}): {e}")
+            return None
+
+    def update_edge(self, edge_id: str, updates: dict):
+        """Update edge fields (for reinforcement, weight changes, etc.)"""
+        try:
+            updates['updated_at'] = datetime.now().isoformat()
+            self.client.table("edge").update(updates).eq("id", edge_id).execute()
+        except Exception as e:
+            logger.error(f"Error updating edge {edge_id}: {e}")
+            raise
+
+    def delete_edges_below_weight(self, threshold: float) -> int:
+        """Delete edges with weight below threshold (for pruning)"""
+        try:
+            # First get count of edges to delete
+            edges_response = (
+                self.client.table("edge")
+                .select("id")
+                .lt("weight", threshold)
+                .execute()
+            )
+
+            count = len(edges_response.data) if edges_response.data else 0
+
+            if count > 0:
+                # Delete them
+                self.client.table("edge").delete().lt("weight", threshold).execute()
+                logger.info(f"Deleted {count} edges below weight threshold {threshold}")
+
+            return count
+        except Exception as e:
+            logger.error(f"Error deleting edges below weight {threshold}: {e}")
+            return 0
+
 
 db = DatabaseService()

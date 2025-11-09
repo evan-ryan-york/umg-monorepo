@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import yaml from 'yaml';
 
 const PROMPTS_DIR = path.join(process.cwd(), '..', '..', 'apps', 'ai-core', 'prompts');
 
@@ -57,12 +58,12 @@ export async function POST(request: Request) {
     }
 
     // Validate YAML by trying to parse it
-    const yaml = require('yaml');
     try {
       yaml.parse(content);
     } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
       return NextResponse.json(
-        { error: `Invalid YAML: ${e.message}` },
+        { error: `Invalid YAML: ${errorMessage}` },
         { status: 400 }
       );
     }

@@ -1,6 +1,17 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+interface EdgeData {
+  id: string;
+  from_id: string;
+  to_id: string;
+  kind: string;
+  confidence?: number;
+  importance?: number;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -13,10 +24,22 @@ export async function GET(request: Request) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     );
 
-    // Fetch entities
+    // Fetch entities with signal data (importance scores)
     const { data: entities, error: entitiesError } = await supabase
       .from('entity')
-      .select('id, title, type, summary, metadata, created_at')
+      .select(`
+        id,
+        title,
+        type,
+        summary,
+        metadata,
+        created_at,
+        signal (
+          importance,
+          recency,
+          novelty
+        )
+      `)
       .order('created_at', { ascending: false })
       .limit(limit);
 
@@ -28,7 +51,7 @@ export async function GET(request: Request) {
       );
     }
 
-    let edges = [];
+    let edges: EdgeData[] = [];
     if (includeEdges) {
       // Fetch edges (relationships between entities)
       const { data: edgesData, error: edgesError } = await supabase

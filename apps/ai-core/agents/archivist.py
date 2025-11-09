@@ -3,7 +3,7 @@ from utils.text_cleaner import TextCleaner
 from services.chunker import Chunker
 from processors.entity_extractor import EntityExtractor
 from processors.mention_tracker import MentionTracker
-from processors.relationship_mapper import RelationshipMapper
+from processors.relationship_mapper import RelationshipMapper  # TODO: Only used for alias detection, will be deprecated
 from services.embeddings import EmbeddingsService
 from services.entity_resolver import EntityResolver
 from processors.signal_scorer import SignalScorer
@@ -25,7 +25,7 @@ class Archivist:
         self.chunker = Chunker()
         self.entity_extractor = EntityExtractor()
         self.mention_tracker = MentionTracker()
-        self.relationship_mapper = RelationshipMapper()
+        self.relationship_mapper = RelationshipMapper()  # TODO: Only for alias detection, will be deprecated
         self.embeddings_service = EmbeddingsService()
         self.entity_resolver = EntityResolver()
         self.signal_scorer = SignalScorer()
@@ -53,7 +53,7 @@ class Archivist:
         3. Extract entities
         4. Track mentions & promote entities
         5. Create hub-and-spoke structures
-        6. Detect relationships
+        6. Trigger relationship engine (asynchronous edge creation)
         7. Detect aliases/renames
         8. Chunk text
         9. Generate embeddings
@@ -282,42 +282,17 @@ class Archivist:
             elif hub_entity_id and core_identity_count >= 2:
                 logger.info(f"Skipping spoke creation - this appears to be a core identity document ({core_identity_count} core_identity entities)")
 
-            # Step 6: Relationship Mapping (UPDATED - now includes existing entities and reference map)
-            # Convert existing entities (Pydantic objects) to dictionaries for relationship mapper
-            existing_entities_dict = [
-                {
-                    'id': e.id,
-                    'title': e.title,
-                    'type': e.type,
-                    'summary': e.summary
-                }
-                for e in existing_entities
-            ]
-
-            relationships = self.relationship_mapper.detect_relationships(
-                cleaned_text,
-                extracted_entities,
-                existing_entities=existing_entities_dict,
-                reference_map=reference_map
-            )
-
-            # Build complete entity_map including both new and existing entities
-            complete_entity_map = dict(entity_map)  # Start with newly created entities
-            for existing_entity in existing_entities:
-                complete_entity_map[existing_entity.title] = existing_entity.id
-
-            edges_created = 0
-            for rel in relationships:
-                success = self.relationship_mapper.create_edge_from_relationship(
-                    rel,
-                    complete_entity_map,
-                    self.db,
-                    source_event_id=event_id  # Track which event created this edge
-                )
-                if success:
-                    edges_created += 1
-
-            logger.info(f"Created {edges_created} edges from {len(relationships)} detected relationships")
+            # Step 6: Trigger Incremental Relationship Detection
+            # Now that entities are created, trigger the RelationshipEngine to find connections
+            if entity_ids:
+                try:
+                    from engines.relationship_engine import RelationshipEngine
+                    engine = RelationshipEngine()
+                    rel_result = engine.run_incremental(event_id)
+                    logger.info(f"Relationship engine created {rel_result.get('edges_created', 0)} edges, updated {rel_result.get('edges_updated', 0)} edges")
+                except Exception as e:
+                    logger.error(f"Relationship engine failed: {e}")
+                    # Don't fail the entire event if relationship detection fails
 
             # Step 7: Alias Detection & Update
             # Prepare entities with IDs for alias detection
@@ -428,7 +403,6 @@ class Archivist:
                 'event_id': event_id,
                 'status': 'success',
                 'entities_created': len(entity_ids),
-                'edges_created': edges_created,
                 'chunks_created': len(chunks),
                 'aliases_updated': len(alias_updates),
                 'processing_time_seconds': elapsed_time

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { CheckCircle2, AlertCircle, Save, RefreshCw } from 'lucide-react';
@@ -19,12 +19,7 @@ export default function PromptsPage(): React.JSX.Element {
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Load list of prompts
-  useEffect(() => {
-    loadPrompts();
-  }, []);
-
-  const loadPrompts = async () => {
+  const loadPrompts = useCallback(async () => {
     try {
       const response = await fetch('/api/prompts');
       const data = await response.json();
@@ -38,7 +33,12 @@ export default function PromptsPage(): React.JSX.Element {
       console.error('Failed to load prompts:', error);
       setMessage({ type: 'error', text: 'Failed to load prompts' });
     }
-  };
+  }, [selectedPrompt]);
+
+  // Load list of prompts
+  useEffect(() => {
+    loadPrompts();
+  }, [loadPrompts]);
 
   // Load selected prompt content
   useEffect(() => {

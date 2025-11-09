@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import type { ArchivistLogEntry } from '@repo/db';
 import { createClient } from '@supabase/supabase-js';
-import type { RawEvent } from '@repo/db';
 import { Info } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
@@ -192,7 +191,7 @@ export default async function ArchivistLogPage(): Promise<React.ReactElement> {
         })
       );
     }
-  } catch (e) {
+  } catch {
     error = 'Error while fetching logs';
   }
 
