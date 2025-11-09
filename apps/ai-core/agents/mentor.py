@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from services.database import DatabaseService
 from config import settings
 from models.chat import ChatMessage, ChatResponse
+from prompts.prompt_manager import prompt_manager
 from typing import List, Optional
 import logging
 import json
@@ -202,34 +203,34 @@ class Mentor:
                 relevant_entities.append(entity)
 
                 # Expand: get all entities connected via edges
-                related = self.db.get_entity_relationships(entity['id'], limit=5)
+                related = self.db.get_entity_relationships(entity.id, limit=5)
 
                 # Add outgoing relationships (this entity -> other entities)
-                for rel in related.get("outgoing", []):
+                for rel in related.outgoing:
                     relationships.append({
                         "from": entity,
-                        "to": rel["entity"],
-                        "edge": rel["edge"]
+                        "to": rel.entity,
+                        "edge": rel.edge
                     })
                     # Add connected entity to context
-                    relevant_entities.append(rel["entity"])
+                    relevant_entities.append(rel.entity)
 
                 # Add incoming relationships (other entities -> this entity)
-                for rel in related.get("incoming", []):
+                for rel in related.incoming:
                     relationships.append({
-                        "from": rel["entity"],
+                        "from": rel.entity,
                         "to": entity,
-                        "edge": rel["edge"]
+                        "edge": rel.edge
                     })
                     # Add connected entity to context
-                    relevant_entities.append(rel["entity"])
+                    relevant_entities.append(rel.entity)
 
         # Remove duplicates
         seen_ids = set()
         unique_relevant = []
         for entity in relevant_entities:
-            if entity['id'] not in seen_ids:
-                seen_ids.add(entity['id'])
+            if entity.id not in seen_ids:
+                seen_ids.add(entity.id)
                 unique_relevant.append(entity)
 
         logger.info(
@@ -252,87 +253,12 @@ class Mentor:
         conversation_history: List[ChatMessage],
         context: dict
     ) -> str:
-        """Build context-aware chat prompt with enhanced relationship context"""
-
-        # Format core identity
-        core_identity_str = ""
-        if context.get("core_identity"):
-            core_identity_str = "User's Goals & Values:\n"
-            for entity in context["core_identity"][:5]:
-                core_identity_str += f"- {entity['title']}: {entity.get('summary', 'N/A')}\n"
-
-        # Format high priority entities
-        high_priority_str = ""
-        if context.get("high_priority"):
-            high_priority_str = "\nHigh Priority (High Importance):\n"
-            for entity in context["high_priority"][:5]:
-                signal = entity.get("signal", {})
-                importance = signal.get("importance", 0) if isinstance(signal, dict) else 0
-                high_priority_str += f"- {entity['title']} ({entity['type']}, importance: {importance:.2f})\n"
-
-        # Format active work
-        active_work_str = ""
-        if context.get("active_work"):
-            active_work_str = "\nActive Work (High Recency):\n"
-            for entity in context["active_work"][:5]:
-                signal = entity.get("signal", {})
-                recency = signal.get("recency", 0) if isinstance(signal, dict) else 0
-                active_work_str += f"- {entity['title']} ({entity['type']}, recency: {recency:.2f})\n"
-
-        # Format relevant entities with relationships
-        relevant_str = ""
-        if context.get("relevant_entities"):
-            relevant_str = "\nRelevant Entities from Knowledge Graph:\n"
-            for entity in context["relevant_entities"][:10]:
-                relevant_str += f"- {entity['title']} ({entity['type']}): {entity.get('summary', 'N/A')}\n"
-
-        # Format relationships
-        relationships_str = ""
-        if context.get("relationships"):
-            relationships_str = "\nKnown Relationships:\n"
-            for rel in context["relationships"][:8]:
-                edge_kind = rel["edge"].get("kind", "relates_to")
-                relationships_str += f"- {rel['from']['title']} --[{edge_kind}]--> {rel['to']['title']}\n"
-
-        # Format conversation history
-        history_str = ""
-        if conversation_history:
-            history_str = "\nRecent Conversation:\n"
-            for msg in conversation_history[-5:]:  # Last 5 messages
-                role_label = "User" if msg.role == "user" else "Mentor"
-                history_str += f"{role_label}: {msg.content}\n"
-
-        prompt = f"""You are the Mentor - a strategic thinking partner with access to the user's complete knowledge graph.
-
-{core_identity_str}
-{high_priority_str}
-{active_work_str}
-{relevant_str}
-{relationships_str}
-{history_str}
-
-User's Current Message:
-{message}
-
-INSTRUCTIONS:
-1. Respond conversationally and helpfully
-2. Reference specific entities from the knowledge graph when relevant
-3. Use the relationships to provide deeper context (e.g., "The Feed feature you mentioned is connected to...")
-4. Ask strategic questions that push their thinking
-5. Be concise but insightful
-6. Challenge assumptions when appropriate
-7. Connect current topic to their goals and past work when relevant
-
-CRITICAL:
-- Ground responses in their actual work (reference entity titles)
-- Leverage relationships to show connections between entities
-- Don't just answer - ask follow-up questions when valuable
-- Be direct and actionable, not generic
-- Keep responses to 2-4 sentences unless more depth is needed
-
-Respond naturally as the Mentor:"""
-
-        return prompt
+        """Build context-aware chat prompt using PromptManager"""
+        return prompt_manager.build_mentor_chat_prompt(
+            message=message,
+            conversation_history=conversation_history,
+            context=context
+        )
 
     def _extract_keywords_from_message(self, message: str) -> List[str]:
         """Extract potential entity keywords from message"""
@@ -363,16 +289,16 @@ Respond naturally as the Mentor:"""
 
         # Check against relevant entities
         for entity in context.get("relevant_entities", []):
-            title = entity['title'].lower()
+            title = entity.title.lower()
             if title in message.lower():
-                mentioned.append(entity['title'])
+                mentioned.append(entity.title)
 
         # Check against active work
         for entity in context.get("active_work", []):
-            title = entity['title'].lower()
+            title = entity.title.lower()
             if title in message.lower():
-                if entity['title'] not in mentioned:
-                    mentioned.append(entity['title'])
+                if entity.title not in mentioned:
+                    mentioned.append(entity.title)
 
         return mentioned
 
@@ -427,7 +353,7 @@ Respond naturally as the Mentor:"""
             goals = [
                 e
                 for e in context["core_identity"]
-                if "goal" in e.get("metadata", {}).get("tags", [])
+                if "goal" in e.metadata.get("tags", [])
             ]
 
             # Get what user actually worked on
@@ -487,7 +413,7 @@ Respond naturally as the Mentor:"""
             historical_connections = []
             for entity in recent:
                 similar = self.db.get_similar_entities(
-                    entity_id=entity["id"], limit=3, exclude_recent_days=30  # Historical only
+                    entity_id=entity.id, limit=3, exclude_recent_days=30  # Historical only
                 )
                 if similar:
                     historical_connections.append(
@@ -540,7 +466,7 @@ Respond naturally as the Mentor:"""
             goals = [
                 e
                 for e in context["core_identity"]
-                if "goal" in e.get("metadata", {}).get("tags", [])
+                if "goal" in e.metadata.get("tags", [])
             ]
 
             if not recent_work and not goals:
@@ -654,16 +580,16 @@ Respond naturally as the Mentor:"""
         goal_list = []
         goal_id_map = {}
         for g in goals:
-            entity_id = g.get('id')
-            goal_list.append(f"- [{entity_id}] {g['title']}: {g.get('summary', 'No summary')}")
-            goal_id_map[g['title']] = entity_id
+            entity_id = g.id
+            goal_list.append(f"- [{entity_id}] {g.title}: {g.summary or 'No summary'}")
+            goal_id_map[g.title] = entity_id
 
         work_list = []
         work_id_map = {}
         for w in actual_work:
-            entity_id = w.get('id')
-            work_list.append(f"- [{entity_id}] {w['title']} ({w['type']}): {w.get('summary', 'No summary')}")
-            work_id_map[w['title']] = entity_id
+            entity_id = w.id
+            work_list.append(f"- [{entity_id}] {w.title} ({w.type}): {w.summary or 'No summary'}")
+            work_id_map[w.title] = entity_id
 
         # Build dismissed pattern context
         dismissed_context = ""
@@ -719,14 +645,14 @@ IMPORTANT:
         for conn in connections[:3]:  # Max 3 connections
             current = conn["current"]
             historical = conn["historical"][0]  # Best match
-            created_date = historical.get("created_at", "")[:10]
+            created_date = str(historical.created_at)[:10] if historical.created_at else ""
 
-            current_id = current.get('id')
-            historical_id = historical.get('id')
+            current_id = current.id
+            historical_id = historical.id
 
             connection_list.append(
-                f"Current: [{current_id}] {current['title']} ({current['type']})\n"
-                f"  → Historical: [{historical_id}] {historical['title']} from {created_date}"
+                f"Current: [{current_id}] {current.title} ({current.type})\n"
+                f"  → Historical: [{historical_id}] {historical.title} from {created_date}"
             )
 
         dismissed_context = ""
@@ -776,13 +702,13 @@ IMPORTANT:
 
         work_summary = []
         for w in recent_work[:5]:
-            entity_id = w.get('id')
-            work_summary.append(f"- [{entity_id}] {w['title']}: {w.get('summary', 'No summary')}")
+            entity_id = w.id
+            work_summary.append(f"- [{entity_id}] {w.title}: {w.summary or 'No summary'}")
 
         goal_summary = []
         for g in goals:
-            entity_id = g.get('id')
-            goal_summary.append(f"- [{entity_id}] {g['title']}")
+            entity_id = g.id
+            goal_summary.append(f"- [{entity_id}] {g.title}")
 
         dismissed_context = ""
         prompt_dismissed = [

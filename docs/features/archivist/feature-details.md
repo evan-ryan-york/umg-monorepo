@@ -6,7 +6,7 @@
 2. [Processing Pipeline](#processing-pipeline)
 3. [Entity Recognition & Mention Tracking](#entity-recognition--mention-tracking)
 4. [Cross-Event Entity Resolution](#cross-event-entity-resolution)
-5. [Relationship Mapping](#relationship-mapping)
+5. [Relationship Detection (via RelationshipEngine)](#relationship-detection-via-relationshipengine)
 6. [Hub-and-Spoke Pattern](#hub-and-spoke-pattern)
 7. [Signal Scoring](#signal-scoring)
 8. [Database Schema](#database-schema)
@@ -46,8 +46,11 @@ apps/ai-core/
 ├── requirements.txt         # Python dependencies
 │
 ├── agents/
-│   ├── archivist.py         # Main orchestrator (11-step pipeline)
+│   ├── archivist.py         # Main orchestrator (10-step pipeline)
 │   └── feedback_processor.py
+│
+├── engines/
+│   └── relationship_engine.py # Relationship detection (5 strategies)
 │
 ├── services/
 │   ├── database.py          # Supabase client wrapper
@@ -57,7 +60,6 @@ apps/ai-core/
 │
 ├── processors/
 │   ├── entity_extractor.py  # Entity recognition (Claude)
-│   ├── relationship_mapper.py # Edge creation (Claude)
 │   ├── mention_tracker.py   # Entity promotion logic
 │   └── signal_scorer.py     # Importance/recency/novelty
 │
@@ -67,8 +69,12 @@ apps/ai-core/
 │   ├── edge.py
 │   └── ...
 │
+├── schedulers/
+│   └── nightly_consolidation.py # RelationshipEngine scheduler
+│
 └── tests/
     ├── test_archivist.py
+    ├── test_relationship_engine.py
     └── fixtures/
 ```
 
@@ -76,7 +82,7 @@ apps/ai-core/
 
 ## Processing Pipeline
 
-The Archivist processes events through an 11-step pipeline:
+The Archivist processes events through a 10-step pipeline (relationship detection moved to RelationshipEngine as of 2025-11-08):
 
 ### Step 1: Fetch Event
 ```python
@@ -261,35 +267,37 @@ if hub_entity_id and event.source in ['quick_capture', 'voice_debrief', 'webhook
     # Creates edge: spoke --[relates_to]--> hub
 ```
 
-### Step 7: Relationship Mapping
+### Step 7: Trigger Relationship Engine (Incremental Mode)
 ```python
-# apps/ai-core/processors/relationship_mapper.py
-relationships = relationship_mapper.detect_relationships(
-    cleaned_text,
-    entities,                 # Newly extracted entities
-    existing_entities=[...],  # Recent 20 entities from DB
-    reference_map={"i": "uuid-ryan-york", ...}
-)
+# apps/ai-core/engines/relationship_engine.py
+# Relationship detection moved to separate engine (2025-11-08)
+from engines.relationship_engine import RelationshipEngine
+
+engine = RelationshipEngine()
+rel_result = engine.run_incremental(event_id)
 
 # Returns:
-[
-  {
-    "from_entity": "Ryan York",
-    "to_entity": "Water OS",
-    "relationship_type": "founded",
-    "metadata": {"context": "starting new business"}
-  }
-]
+{
+  "edges_created": 5,
+  "edges_updated": 2,
+  "entities_analyzed": 12,
+  "processing_time": 2.3,
+  "strategies_used": ["pattern_based", "semantic_llm"]
+}
 ```
 
-**Relationship Types**:
-- `belongs_to`, `modifies`, `mentions`, `informs`, `blocks`, `contradicts`, `relates_to`
-- `founded`, `works_at`, `manages`, `owns`, `contributes_to` (cross-event)
+**Why Separate Engine?**:
+- Archivist creates entities (nodes)
+- RelationshipEngine creates edges (relationships)
+- Separation of concerns for better maintainability
+- Enables cross-event relationship detection (Archivist was event-scoped only)
 
-**Detection Methods**:
-1. **Explicit keywords**: "renamed", "belongs to", "blocks", etc.
-2. **LLM analysis**: Claude identifies relationships from context
-3. **Reference hints**: Entity list includes `[also referred to as: i, me, my]`
+**Operating Modes**:
+1. **Incremental** (called by Archivist after event processing) - analyzes new entities
+2. **Nightly** (3 AM consolidation) - runs all 5 detection strategies
+3. **On-demand** (user-triggered) - manual analysis
+
+See `docs/features/relationship-engine/` for full details.
 
 ### Step 8: Alias Detection
 ```python
@@ -577,109 +585,74 @@ class EntityResolver:
 
 ---
 
-## Relationship Mapping
+## Relationship Detection (via RelationshipEngine)
 
-### RelationshipMapper Implementation
+**Note**: As of 2025-11-08, relationship detection is handled by a separate RelationshipEngine, not the Archivist.
 
-**File**: `apps/ai-core/processors/relationship_mapper.py`
+### Architecture Change
 
-**Enhanced Prompt with References**:
-```python
-def detect_relationships(
-    text: str,
-    entities: List[Dict],
-    existing_entities: List[Dict] = [],
-    reference_map: Dict[str, str] = {}
-):
-    # Combine new + existing entities
-    all_entities = entities + existing_entities
+**Old Approach** (before 2025-11-08):
+- Archivist created entities AND relationships in single pipeline
+- Event-scoped only (couldn't detect cross-event relationships)
+- Prescriptive (limited relationship types)
 
-    # Build entity list with reference hints
-    entity_list = []
-    for e in all_entities:
-        entity_str = f"{e['title']} ({e['type']})"
+**New Approach** (current):
+- **Archivist**: Creates entities (nodes in graph)
+- **RelationshipEngine**: Creates edges (relationships between nodes)
+- Separation of concerns enables:
+  - Cross-event relationship detection
+  - Multiple detection strategies (5 total)
+  - Hebbian learning (edge reinforcement)
+  - Synaptic homeostasis (decay and pruning)
 
-        # Add reference hints
-        matching_refs = [
-            ref for ref, entity_id in reference_map.items()
-            if entity_id == e.get('id', e.get('entity_id'))
-        ]
-        if matching_refs:
-            entity_str += f" [also referred to as: {', '.join(matching_refs)}]"
+### How It Works
 
-        entity_list.append(entity_str)
+**Step 1**: Archivist processes event and creates entities
+**Step 2**: Archivist triggers `RelationshipEngine.run_incremental(event_id)`
+**Step 3**: RelationshipEngine analyzes entities using 2 strategies:
+  - Pattern-based (regex for role→organization)
+  - Semantic LLM (Claude for complex relationships)
 
-    prompt = f"""Given this text and list of entities, identify relationships.
+**Step 4**: Nightly consolidation (3 AM) runs 3 additional strategies:
+  - Embedding similarity (semantic similarity)
+  - Temporal analysis (overlap detection)
+  - Graph topology (transitive connections)
 
-Text: {text}
+### Full Documentation
 
-Entities (new and existing from knowledge graph):
-{chr(10).join(entity_list)}
+See `docs/features/relationship-engine/` for complete implementation details:
+- 5 detection strategies
+- Hebbian learning (LTP analog)
+- Edge decay and pruning
+- Operating modes (incremental, nightly, on-demand)
+- API reference
+- Test coverage
 
-IMPORTANT: Pronouns in text may refer to existing entities.
-Example: "I am starting Water OS" means the person entity relates to Water OS.
+### Edge Schema
 
-For each relationship, specify:
-- from_entity: Source entity title (exact match from list)
-- to_entity: Destination entity title (exact match from list)
-- relationship_type: One of [belongs_to, modifies, mentions, informs, blocks,
-  contradicts, relates_to, founded, works_at, manages, owns, contributes_to]
-- metadata: Relevant context as JSON
+Edges now include weight and reinforcement tracking:
+```sql
+CREATE TABLE edge (
+  id UUID PRIMARY KEY,
+  from_id UUID REFERENCES entity(id),
+  to_id UUID REFERENCES entity(id),
+  kind TEXT NOT NULL,
 
-Return ONLY a JSON object with a "relationships" array.
-If no relationships, return {{"relationships": []}}
-"""
-```
+  -- Hebbian Learning (added 2025-11-08)
+  weight FLOAT DEFAULT 1.0,              -- Synaptic strength
+  last_reinforced_at TIMESTAMPTZ,        -- Last reinforcement
 
-**Edge Creation**:
-```python
-for rel in relationships:
-    # Map titles to entity IDs
-    from_id = entity_map.get(rel['from_entity'])
-    to_id = entity_map.get(rel['to_entity'])
+  -- Scoring
+  confidence FLOAT DEFAULT 1.0,
+  importance FLOAT,
 
-    if from_id and to_id:
-        db.create_edge({
-            'from_id': from_id,
-            'to_id': to_id,
-            'kind': rel['relationship_type'],
-            'metadata': rel.get('metadata', {}),
-            'source_event_id': event_id  # Track which event created edge
-        })
-```
+  -- Context
+  description TEXT,
+  metadata JSONB DEFAULT '{}',
+  source_event_id UUID REFERENCES raw_events(id),
 
-### Alias Detection Patterns
-
-**Regex Patterns**:
-```python
-rename_patterns = [
-    r'renamed?\s+(?:from\s+)?["\']?(.+?)["\']?\s+to\s+["\']?(.+?)["\']?',
-    r'now\s+called\s+["\']?(.+?)["\']?\s+instead\s+of\s+["\']?(.+?)["\']?',
-    r'changing\s+["\']?(.+?)["\']?\s+to\s+["\']?(.+?)["\']?'
-]
-```
-
-**Metadata Update**:
-```python
-for match in matches:
-    old_name = match.group(1).strip()
-    new_name = match.group(2).strip()
-
-    # Find entity with new_name
-    entity = find_entity_by_title(new_name)
-
-    # Update metadata
-    current_metadata = db.get_entity_metadata(entity.id)
-    aliases = current_metadata.get('aliases', [])
-
-    if old_name not in aliases:
-        aliases.append(old_name)
-
-    db.update_entity_metadata(entity.id, {
-        **current_metadata,
-        'aliases': aliases,
-        'previous_names': aliases
-    })
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
 ```
 
 ---
@@ -1586,6 +1559,6 @@ Query with filter:
 
 ---
 
-**Last Updated**: 2025-10-26
+**Last Updated**: 2025-11-08 (Updated for RelationshipEngine separation)
 **Status**: Production-ready
-**Version**: 1.0
+**Version**: 2.0 (Relationship detection moved to separate engine)

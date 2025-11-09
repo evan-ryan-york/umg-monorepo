@@ -62,17 +62,19 @@ export function useMentorChat(): UseMentorChatReturn {
       // Get the current session token
       const { data: { session } } = await supabase.auth.getSession();
 
-      if (!session) {
-        throw new Error('Not authenticated. Please sign in again.');
+      // DEVELOPMENT MODE: Allow chat without auth (similar to quick capture)
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
       }
 
       // Call API
       const response = await fetch('/api/mentor/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
+        headers,
         body: JSON.stringify({
           message: content.trim(),
           conversation_history: messages.slice(-10).map(m => ({

@@ -17,6 +17,10 @@ class Edge(BaseModel):
     confidence: float = 1.0
     importance: Optional[float] = None
 
+    # Relationship Engine: Hebbian Learning (added 2025-11-08)
+    weight: float = 1.0  # Synaptic strength - increases with reinforcement
+    last_reinforced_at: Optional[datetime] = None  # Last reinforcement timestamp
+
     # Rich description (free-form context)
     description: Optional[str] = None
 

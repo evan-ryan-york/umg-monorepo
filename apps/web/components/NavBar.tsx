@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { PenLine, MessageSquare, BookOpen, Sun } from 'lucide-react';
+import { PenLine, MessageSquare, BookOpen, Sun, FileText, Network } from 'lucide-react';
 
 export function NavBar(): React.ReactElement {
   const pathname = usePathname();
@@ -11,8 +11,10 @@ export function NavBar(): React.ReactElement {
   const navLinks = [
     { href: '/', label: 'Quick Capture', icon: PenLine },
     { href: '/mentor/chat', label: 'Chat with Mentor', icon: MessageSquare },
+    { href: '/entities', label: 'Entities', icon: Network },
     { href: '/log', label: 'Activity Log', icon: BookOpen },
     { href: '/digest', label: 'Daily Digest', icon: Sun },
+    { href: '/prompts', label: 'Prompts', icon: FileText },
   ];
 
   return (

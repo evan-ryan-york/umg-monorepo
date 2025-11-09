@@ -51,18 +51,34 @@ psql "postgresql://postgres:[SERVICE_ROLE_KEY]@db.mdcarckygvbcjgexvdqw.supabase.
 - **`create_dismissed_patterns_table.sql`** - Creates table for storing dismissed insight patterns
 - **`add_mentor_indexes.sql`** - Adds performance indexes for Mentor queries
 
+### Phase 4: Relationship Engine (2025-11-08)
+- **`add_relationship_engine_columns.sql`** - Adds weight and last_reinforced_at columns for Hebbian learning
+
 ## Migration Order
 
 Run migrations in this order:
 
 1. ✅ Initial setup (already done via Supabase dashboard)
 2. ✅ `add_source_event_id_to_edge.sql` (may already be run)
-3. ⏳ `create_dismissed_patterns_table.sql` (NEW - run this now)
-4. ⏳ `add_mentor_indexes.sql` (NEW - run this now)
+3. ✅ `create_dismissed_patterns_table.sql` (may already be run)
+4. ✅ `add_mentor_indexes.sql` (may already be run)
+5. ⏳ `add_relationship_engine_columns.sql` (NEW - **APPLY THIS NOW**)
 
 ## Rollback
 
 If you need to rollback a migration:
+
+### Rollback Relationship Engine columns
+```sql
+-- Remove indexes
+DROP INDEX IF EXISTS idx_edge_weight;
+DROP INDEX IF EXISTS idx_edge_last_reinforced;
+DROP INDEX IF EXISTS idx_edge_from_weight;
+
+-- Remove columns
+ALTER TABLE edge DROP COLUMN IF EXISTS weight;
+ALTER TABLE edge DROP COLUMN IF EXISTS last_reinforced_at;
+```
 
 ### Rollback dismissed_patterns table
 ```sql
@@ -84,6 +100,32 @@ DROP INDEX IF EXISTS idx_entity_type_created_at;
 ## Verification
 
 After running migrations, verify they worked:
+
+### Check Relationship Engine columns
+```sql
+-- Check columns exist
+SELECT column_name, data_type, column_default
+FROM information_schema.columns
+WHERE table_name = 'edge'
+AND column_name IN ('weight', 'last_reinforced_at');
+
+-- Should return 2 rows showing the new columns
+
+-- Check indexes
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'edge'
+AND indexname LIKE 'idx_edge_%';
+
+-- Verify backfill
+SELECT COUNT(*) FROM edge WHERE weight IS NOT NULL;
+SELECT COUNT(*) FROM edge WHERE last_reinforced_at IS NOT NULL;
+```
+
+Or use the verification script:
+```bash
+python apps/ai-core/scripts/check_and_apply_migration.py
+```
 
 ### Check dismissed_patterns table
 ```sql

@@ -1,39 +1,28 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { supabase, signInWithGoogle, onAuthStateChange } from '@repo/db';
-import type { User } from '@supabase/supabase-js';
+import { supabase, onAuthStateChange } from '@repo/db';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 
 export default function Home(): React.ReactElement {
-  const [user, setUser] = useState<User | null>(null);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [content, setContent] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
-    // Listen for auth state changes
-    const { data: { subscription } } = onAuthStateChange((user) => {
-      setUser(user);
-      setIsAuthLoading(false);
+    // Listen for auth state changes (development mode - not enforcing auth)
+    const { data: { subscription } } = onAuthStateChange(() => {
+      // Auth state tracking for future use
     });
 
     return () => {
       subscription.unsubscribe();
     };
   }, []);
-
-  const handleSignIn = async () => {
-    const { error } = await signInWithGoogle();
-    if (error) {
-      setMessage({ type: 'error', text: 'Failed to sign in. Please try again.' });
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
